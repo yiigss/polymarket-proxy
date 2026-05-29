@@ -1,0 +1,71 @@
+name: Place Polymarket Bet
+on:
+  workflow_dispatch:
+    inputs:
+      side:
+        description: '"up" or "down"'
+        required: true
+        type: string
+      amount:
+        description: 'Amount in USDC (e.g. 1)'
+        required: true
+        type: string
+      candle_time_ms:
+        description: 'Candle open time — milliseconds since epoch'
+        required: true
+        type: string
+jobs:
+  place-bet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Install OpenVPN
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openvpn curl
+      - name: Download NordVPN Switzerland TCP config
+        run: |
+          wget -q "https://downloads.nordcdn.com/configs/files/ovpn_legacy/servers/ch198.nordvpn.com.tcp.ovpn" -O ch.ovpn
+          echo "Config downloaded."
+      - name: Connect to NordVPN Switzerland
+        run: |
+          printf '%s\n%s\n' "${{ secrets.NORDVPN_USER }}" "${{ secrets.NORDVPN_PASS }}" > /tmp/vpncreds.txt
+          chmod 600 /tmp/vpncreds.txt
+          sudo openvpn --config ch.ovpn \
+            --auth-user-pass /tmp/vpncreds.txt \
+            --daemon --log /tmp/vpn.log
+          echo "Waiting for VPN to connect..."
+          sleep 25
+          IP=$(curl -s --max-time 10 ipinfo.io/ip || echo "unknown")
+          COUNTRY=$(curl -s --max-time 10 ipinfo.io/country || echo "??")
+          echo "==> Outbound IP: $IP  Country: $COUNTRY"
+          if [ "$COUNTRY" != "CH" ]; then
+            echo "ERROR: VPN did not connect to Switzerland!"
+            cat /tmp/vpn.log | tail -20
+            exit 1
+          fi
+          echo "VPN OK — connected to Switzerland"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: bet/package.json
+      - name: Install bet dependencies
+        working-directory: bet
+        run: npm install --no-fund --no-audit
+      - name: Place bet
+        working-directory: bet
+        env:
+          POLYMARKET_API_KEY:        ${{ secrets.POLYMARKET_API_KEY }}
+          POLYMARKET_SECRET:         ${{ secrets.POLYMARKET_SECRET }}
+          POLYMARKET_PASSPHRASE:     ${{ secrets.POLYMARKET_PASSPHRASE }}
+          POLYMARKET_PRIVATE_KEY:    ${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          POLYMARKET_WALLET_ADDRESS: ${{ secrets.POLYMARKET_WALLET_ADDRESS }}
+        run: |
+          node index.js \
+            "${{ inputs.side }}" \
+            "${{ inputs.amount }}" \
+            "${{ inputs.candle_time_ms }}"
