@@ -27,7 +27,7 @@ jobs:
           sudo apt-get install -y -qq openvpn curl
       - name: Download NordVPN Switzerland TCP config
         run: |
-          wget -q "https://downloads.nordcdn.com/configs/files/ovpn_legacy/servers/ch198.nordvpn.com.tcp.ovpn" -O ch.ovpn
+          wget -q "https://downloads.nordcdn.com/configs/files/ovpn_tcp/servers/ch198.nordvpn.com.tcp.ovpn" -O ch.ovpn
           echo "Config downloaded."
       - name: Connect to NordVPN Switzerland
         run: |
