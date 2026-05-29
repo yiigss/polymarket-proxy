@@ -7,6 +7,7 @@ import os, sys, json, traceback, time, hmac, hashlib, base64
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, MarketOrderArgs, OrderType
 from py_clob_client.constants import POLYGON
+from py_clob_client.utilities import order_to_json
 import requests as req_lib
 
 CLOB_HOST = "https://clob.polymarket.com"
@@ -150,22 +151,13 @@ def main():
                 side="BUY",
             )
             signed = client.create_market_order(order_args)
-            o = signed.order
-            order_dict = {
-                "salt":          str(o.salt),
-                "maker":         o.maker,
-                "signer":        o.signer,
-                "taker":         o.taker,
-                "tokenId":       str(o.tokenId),
-                "makerAmount":   str(o.makerAmount),
-                "takerAmount":   str(o.takerAmount),
-                "expiration":    str(o.expiration),
-                "nonce":         str(o.nonce),
-                "feeRateBps":    str(o.feeRateBps),
-                "side":          int(o.side),
-                "signatureType": int(o.signatureType),
-            }
-            print(f"[Order] makerAmount={order_dict['makerAmount']} takerAmount={order_dict['takerAmount']} signatureType={order_dict['signatureType']}")
+
+            # Use the library's own serializer — avoids Uint/enum conversion issues
+            canonical_body_str = order_to_json(signed, api_key, OrderType.FOK)
+            canonical = json.loads(canonical_body_str)
+            order_dict = canonical["order"]
+            signature  = canonical["signature"]
+            print(f"[Order] makerAmount={order_dict.get('makerAmount')} takerAmount={order_dict.get('takerAmount')} signatureType={order_dict.get('signatureType')}")
 
             # Try all combinations of version placement that could fix order_version_mismatch:
             # (outer_version, inner_version)
@@ -180,7 +172,7 @@ def main():
             for outer_v, inner_v in version_combos:
                 status, resp = post_order_manual(
                     api_key, api_secret, passphrase, funder,
-                    order_dict, signed.signature,
+                    order_dict, signature,
                     outer_version=outer_v, inner_version=inner_v,
                 )
                 err = resp.get("error", "")
