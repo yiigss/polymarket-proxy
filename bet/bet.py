@@ -3,7 +3,7 @@
 bet.py — place a Polymarket CLOB order from a Swiss IP via GitHub Actions
 Usage: python3 bet.py <up|down> <amount_usdc> <candle_open_time_ms>
 """
-import os, sys, json
+import os, sys, json, traceback
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, MarketOrderArgs, OrderType
 from py_clob_client.constants import POLYGON
@@ -113,6 +113,7 @@ def main():
             print(f"[Warn] {label} unexpected response — trying next")
         except Exception as e:
             print(f"[{label}] exception: {e}")
+            traceback.print_exc()
 
     raise RuntimeError("All signature types exhausted — order not placed")
 
