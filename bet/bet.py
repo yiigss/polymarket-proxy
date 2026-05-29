@@ -67,9 +67,7 @@ def main():
     market   = get_btc5m_market(candle_ms)
     token_id = market["up_token"]  if side_str == "up"   else market["down_token"]
     price    = market["up_price"]  if side_str == "up"   else market["down_price"]
-    eff_amt  = max(amount, 15)
-    if eff_amt != amount:
-        print(f"[Bet] Amount ${amount} < $15 minimum — using ${eff_amt}")
+    eff_amt  = amount
     print(f"[Market] {market['slug']} | price={price} | negRisk={market['neg_risk']}")
 
     # ── New V2 SDK (polymarket-client) ─────────────────────────────────────
