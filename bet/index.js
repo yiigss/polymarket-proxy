@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * index.js — thin launcher: installs py-clob-client and delegates to bet.py
- * The JS @polymarket/clob-client generates orders with a mismatched version
- * field; the Python reference client is what Polymarket actually supports.
+ * index.js — thin launcher: installs polymarket-client (V2 SDK) and delegates to bet.py
+ * py-clob-client was archived in April 2026 after the Polymarket CLOB v2 migration.
+ * All orders via the old client fail with order_version_mismatch.
  */
 const { execSync } = require("child_process");
 const path = require("path");
@@ -15,7 +15,7 @@ if (!side || !amount || !candleMs) {
 
 console.log("[Launcher] Installing Python dependencies...");
 execSync(
-  "pip3 install --quiet --break-system-packages py-clob-client requests",
+  "pip3 install --quiet --pre --break-system-packages 'polymarket-client>=0.1.0b3' requests",
   { stdio: "inherit" }
 );
 
