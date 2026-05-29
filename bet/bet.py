@@ -9,8 +9,8 @@ from py_clob_client.clob_types import ApiCreds, MarketOrderArgs, OrderType
 from py_clob_client.constants import POLYGON
 import requests as req_lib
 
-CLOB_HOST  = "https://clob.polymarket.com"
-GAMMA_API  = "https://gamma-api.polymarket.com"
+CLOB_HOST = "https://clob.polymarket.com"
+GAMMA_API = "https://gamma-api.polymarket.com"
 
 
 def get_btc5m_market(candle_open_ms: int) -> dict:
@@ -33,22 +33,22 @@ def get_btc5m_market(candle_open_ms: int) -> dict:
     down_idx = next(i for i, o in enumerate(outcomes) if o.lower() == "down")
 
     return {
-        "slug":        slug,
-        "up_token":    token_ids[up_idx],
-        "down_token":  token_ids[down_idx],
-        "up_price":    float(prices[up_idx]),
-        "down_price":  float(prices[down_idx]),
-        "neg_risk":    neg_risk,
+        "slug":       slug,
+        "up_token":   token_ids[up_idx],
+        "down_token": token_ids[down_idx],
+        "up_price":   float(prices[up_idx]),
+        "down_price": float(prices[down_idx]),
+        "neg_risk":   neg_risk,
     }
 
 
 def l2_headers(api_key: str, api_secret: str, passphrase: str, funder: str,
                method: str, path: str, body: str = "") -> dict:
-    ts   = str(int(time.time()))
-    msg  = ts + method + path + body
-    raw_secret = base64.b64decode(api_secret)
-    sig  = base64.b64encode(
-        hmac.new(raw_secret, msg.encode("utf-8"), hashlib.sha256).digest()
+    ts  = str(int(time.time()))
+    msg = ts + method + path + body
+    raw = base64.b64decode(api_secret)
+    sig = base64.b64encode(
+        hmac.new(raw, msg.encode("utf-8"), hashlib.sha256).digest()
     ).decode("utf-8")
     return {
         "POLY_ADDRESS":    funder,
@@ -60,27 +60,35 @@ def l2_headers(api_key: str, api_secret: str, passphrase: str, funder: str,
     }
 
 
-def post_order_direct(api_key, api_secret, passphrase, funder,
-                      order_dict: dict, signature: str, order_type: str = "FOK",
-                      version: str = None) -> dict:
+def post_order_manual(api_key, api_secret, passphrase, funder,
+                      order_dict: dict, signature: str,
+                      order_type: str = "FOK",
+                      outer_version=None, inner_version=None) -> tuple:
+    """POST the signed order directly, optionally injecting version fields."""
+    inner = dict(order_dict)
+    if inner_version is not None:
+        inner["version"] = inner_version
+
     body_dict = {
-        "order":     order_dict,
+        "order":     inner,
         "signature": signature,
         "owner":     api_key,
         "orderType": order_type,
     }
-    if version is not None:
-        body_dict["version"] = version
+    if outer_version is not None:
+        body_dict["version"] = outer_version
 
     body_str = json.dumps(body_dict, separators=(",", ":"))
     hdrs = l2_headers(api_key, api_secret, passphrase, funder, "POST", "/order", body_str)
 
-    print(f"[HTTP] POST {CLOB_HOST}/order  version={version!r}")
-    print(f"[Body] {body_str[:800]}")
+    label = f"outer={outer_version!r} inner={inner_version!r}"
+    print(f"[POST] /order  {label}")
+    print(f"[Body] {body_str[:600]}")
 
     resp = req_lib.post(f"{CLOB_HOST}/order", headers=hdrs, data=body_str, timeout=20)
-    print(f"[Resp] {resp.status_code} {resp.text[:500]}")
-    return resp.status_code, resp.json() if resp.content else {}
+    data = resp.json() if resp.content else {}
+    print(f"[Resp] {resp.status_code} {json.dumps(data)}")
+    return resp.status_code, data
 
 
 def main():
@@ -109,19 +117,23 @@ def main():
         raise RuntimeError(f"Not CH — got {ip_data.get('country')}")
 
     market   = get_btc5m_market(candle_ms)
-    token_id = market["up_token"]   if side_str == "up"   else market["down_token"]
-    price    = market["up_price"]   if side_str == "up"   else market["down_price"]
+    token_id = market["up_token"]  if side_str == "up"   else market["down_token"]
+    price    = market["up_price"]  if side_str == "up"   else market["down_price"]
     eff_amt  = max(amount, 15)
     if eff_amt != amount:
-        print(f"[Bet] Amount ${amount} below $15 minimum — using ${eff_amt}")
+        print(f"[Bet] Amount ${amount} < $15 minimum — using ${eff_amt}")
 
-    print(f"[Market] {market['slug']} | negRisk={market['neg_risk']} | token={token_id[:12]}... | price={price}")
+    print(f"[Market] {market['slug']} | negRisk={market['neg_risk']} | price={price}")
+
+    # Clamp price to valid range (market might have resolved partially)
+    if not (0.01 <= price <= 0.99):
+        print(f"[Warn] Price {price} outside valid range — clamping to 0.05/0.95")
+        price = max(0.05, min(0.95, price))
 
     creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=passphrase)
 
-    # SignatureType: EOA=0, POLY_PROXY=1, POLY_GNOSIS_SAFE=2
-    for sig_type, label in [(1, "POLY_PROXY"), (0, "EOA")]:
-        print(f"\n[Order] Trying sig_type={sig_type} ({label})")
+    for sig_type, sig_label in [(1, "POLY_PROXY"), (0, "EOA")]:
+        print(f"\n[Order] sig_type={sig_type} ({sig_label})")
         try:
             client = ClobClient(
                 CLOB_HOST,
@@ -131,7 +143,6 @@ def main():
                 funder=funder,
                 signature_type=sig_type,
             )
-            # Pass price explicitly — avoids orderbook fetch (handles markets with no active book)
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 price=price,
@@ -139,8 +150,6 @@ def main():
                 side="BUY",
             )
             signed = client.create_market_order(order_args)
-
-            # Serialize order fields
             o = signed.order
             order_dict = {
                 "salt":          str(o.salt),
@@ -156,25 +165,35 @@ def main():
                 "side":          int(o.side),
                 "signatureType": int(o.signatureType),
             }
-            print(f"[Order] {json.dumps(order_dict)}")
+            print(f"[Order] makerAmount={order_dict['makerAmount']} takerAmount={order_dict['takerAmount']} signatureType={order_dict['signatureType']}")
 
-            # Try without version, then version="1", then version="2"
-            for ver in [None, "1", "2"]:
-                status, resp = post_order_direct(
+            # Try all combinations of version placement that could fix order_version_mismatch:
+            # (outer_version, inner_version)
+            version_combos = [
+                (None,  None),   # original format — no version anywhere
+                (2,     None),   # outer body integer
+                ("2",   None),   # outer body string
+                (None,  2),      # inner order integer
+                (None,  "2"),    # inner order string
+                (2,     2),      # both integer
+            ]
+            for outer_v, inner_v in version_combos:
+                status, resp = post_order_manual(
                     api_key, api_secret, passphrase, funder,
-                    order_dict, signed.signature, version=ver
+                    order_dict, signed.signature,
+                    outer_version=outer_v, inner_version=inner_v,
                 )
+                err = resp.get("error", "")
                 if status == 200 and (resp.get("success") or resp.get("orderID") or resp.get("order")):
-                    order_id = resp.get("orderID") or (resp.get("order") or {}).get("id") or "?"
-                    print(f"[OK] Order placed via {label} version={ver!r}! id={order_id} ${eff_amt} @ {price}")
+                    oid = resp.get("orderID") or (resp.get("order") or {}).get("id") or "?"
+                    print(f"[OK] PLACED! {sig_label} outer={outer_v!r} inner={inner_v!r} id={oid} ${eff_amt}@{price}")
                     sys.exit(0)
-                if resp.get("error") and "version" not in str(resp.get("error", "")):
-                    # Non-version error — stop trying versions
-                    print(f"[Skip] Non-version error: {resp} — trying next sig_type")
+                if err and "version" not in str(err):
+                    print(f"[Skip] Non-version error '{err}' — stop trying versions for this sig_type")
                     break
 
         except Exception as e:
-            print(f"[{label}] exception: {e}")
+            print(f"[{sig_label}] create_order exception: {e}")
             traceback.print_exc()
 
     raise RuntimeError("All attempts exhausted — order not placed")
