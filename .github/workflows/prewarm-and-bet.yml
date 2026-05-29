@@ -52,7 +52,7 @@ jobs:
               SIDE=$(echo "$RESP"     | python3 -c "import sys,json; print(json.load(sys.stdin)['side'])")
               AMOUNT=$(echo "$RESP"   | python3 -c "import sys,json; print(json.load(sys.stdin)['amount'])")
               CANDLE_MS=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['candle_ms'])")
-              echo "Firing bet: $SIDE $$AMOUNT candle=$CANDLE_MS"
+              echo "Firing bet: $SIDE $AMOUNT candle=$CANDLE_MS"
               python3 bet/bet.py "$SIDE" "$AMOUNT" "$CANDLE_MS"
               exit 0
             elif [ "$STATUS" = "abort" ]; then
