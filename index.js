@@ -16,6 +16,22 @@ const STRIP_HEADERS = new Set([
 ]);
 
 const server = http.createServer((req, res) => {
+  // Diagnostic: return this server's outbound IP
+  if (req.url === "/whoami") {
+    https.get("https://ipinfo.io/json", (r) => {
+      let d = "";
+      r.on("data", (c) => (d += c));
+      r.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
+        res.end(d);
+      });
+    }).on("error", (e) => {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: e.message }));
+    });
+    return;
+  }
+
   const url = new URL(req.url, TARGET);
   const options = {
     hostname: "clob.polymarket.com",
