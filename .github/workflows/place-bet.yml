@@ -36,13 +36,14 @@ jobs:
             if [ "$COUNTRY" = "CH" ]; then echo "VPN OK — Switzerland"; break; fi
             if [ "$i" = "20" ]; then echo "ERROR: VPN timeout"; tail -20 /tmp/vpn.log; exit 1; fi
           done
-      - name: Cache pip
+      - name: Cache installed Python packages
+        id: pylocal-cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-polymarket-v1
-          restore-keys: pip-polymarket-
+          path: ~/.local
+          key: pylocal-polymarket-v1-${{ runner.os }}
       - name: Install Python dependencies
+        if: steps.pylocal-cache.outputs.cache-hit != 'true'
         run: pip3 install --quiet --pre 'polymarket-client>=0.1.0b3' requests PySocks
       - name: Place bet
         env:
