@@ -153,8 +153,10 @@ def main():
             signed = client.create_market_order(order_args)
 
             # Use the library's own serializer — avoids Uint/enum conversion issues
-            canonical_body_str = order_to_json(signed, api_key, OrderType.FOK)
-            canonical = json.loads(canonical_body_str)
+            # order_to_json returns a dict (despite the name)
+            canonical  = order_to_json(signed, api_key, OrderType.FOK)
+            if isinstance(canonical, str):
+                canonical = json.loads(canonical)
             order_dict = canonical["order"]
             signature  = canonical["signature"]
             print(f"[Order] makerAmount={order_dict.get('makerAmount')} takerAmount={order_dict.get('takerAmount')} signatureType={order_dict.get('signatureType')}")
