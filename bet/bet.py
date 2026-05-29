@@ -7,17 +7,36 @@ import os, sys, json, traceback
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, MarketOrderArgs, OrderType
 from py_clob_client.constants import POLYGON
-import requests
+import requests as req_lib
 
 CLOB_HOST  = "https://clob.polymarket.com"
 GAMMA_API  = "https://gamma-api.polymarket.com"
+
+
+def patch_http_logging():
+    """Monkey-patch py_clob_client HTTP helpers to log raw request/response."""
+    try:
+        import py_clob_client.http_helpers.helpers as hh
+        original = hh.request
+
+        def logged_request(endpoint, method, headers, data=None):
+            print(f"[HTTP] {method} {endpoint}")
+            if data:
+                print(f"[Body] {data if isinstance(data,str) else json.dumps(data,default=str)[:2000]}")
+            resp = original(endpoint, method, headers, data)
+            print(f"[Resp] {json.dumps(resp,default=str)[:2000] if isinstance(resp,dict) else str(resp)[:500]}")
+            return resp
+
+        hh.request = logged_request
+    except Exception as e:
+        print(f"[Patch] Could not patch HTTP helpers: {e}")
 
 
 def get_btc5m_market(candle_open_ms: int) -> dict:
     sec  = candle_open_ms // 1000
     slug = f"btc-updown-5m-{sec}"
     print(f"[Market] Looking up {slug}")
-    r = requests.get(f"{GAMMA_API}/events?slug={slug}", timeout=15)
+    r = req_lib.get(f"{GAMMA_API}/events?slug={slug}", timeout=15)
     r.raise_for_status()
     events = r.json()
     if not events:
@@ -47,6 +66,8 @@ def main():
         print("Usage: bet.py <up|down> <amount> <candle_time_ms>", file=sys.stderr)
         sys.exit(1)
 
+    patch_http_logging()
+
     side_str, amount_str, candle_ms_str = sys.argv[1], sys.argv[2], sys.argv[3]
     amount       = float(amount_str)
     candle_ms    = int(candle_ms_str)
@@ -62,7 +83,7 @@ def main():
         private_key = "0x" + private_key
 
     # Confirm Swiss IP
-    ip_data = requests.get("https://ipinfo.io/json", timeout=10).json()
+    ip_data = req_lib.get("https://ipinfo.io/json", timeout=10).json()
     print(f"[IP] {ip_data.get('ip')} — {ip_data.get('city')}, {ip_data.get('country')}")
     if ip_data.get("country") != "CH":
         raise RuntimeError(f"Not CH — got {ip_data.get('country')}")
@@ -78,8 +99,8 @@ def main():
 
     creds  = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=passphrase)
 
-    # Try POLY_PROXY (2) then EOA (0) — POLY_PROXY is standard for Polymarket accounts
-    for sig_type, label in [(2, "POLY_PROXY"), (0, "EOA")]:
+    # SignatureType values: EOA=0, POLY_PROXY=1, POLY_GNOSIS_SAFE=2
+    for sig_type, label in [(1, "POLY_PROXY"), (0, "EOA")]:
         print(f"[Order] Trying signature_type={sig_type} ({label})")
         try:
             client = ClobClient(
@@ -96,7 +117,15 @@ def main():
                 side="BUY",
             )
             signed = client.create_market_order(order_args)
-            print(f"[Order] Signed order keys: {list(signed.__dict__.keys()) if hasattr(signed,'__dict__') else type(signed)}")
+            # Log the full order struct for debugging
+            if hasattr(signed, '__dict__'):
+                print(f"[Order] Signed order: {json.dumps(signed.__dict__, default=str)}")
+            elif hasattr(signed, 'order'):
+                print(f"[Order] Signed order.order: {json.dumps(signed.order.__dict__, default=str)}")
+                print(f"[Order] Signed signature: {signed.signature}")
+            else:
+                print(f"[Order] Signed type={type(signed)} value={signed}")
+
             resp = client.post_order(signed, OrderType.FOK)
             print(f"[Order] Response: {resp}")
 
@@ -107,7 +136,6 @@ def main():
             if isinstance(resp, dict) and (resp.get("success") or resp.get("orderID")):
                 order_id = resp.get("orderID") or resp.get("order_id") or "?"
                 print(f"[OK] Order placed via {label}! id={order_id} amount=${eff_amt} price={price}")
-                print(f"::set-output name=order_id::{order_id}")
                 sys.exit(0)
 
             print(f"[Warn] {label} unexpected response — trying next")
