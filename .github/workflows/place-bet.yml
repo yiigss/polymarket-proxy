@@ -22,19 +22,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install OpenVPN
         run: sudo apt-get install -y -qq openvpn
-      - name: Download NordVPN Switzerland config
-        run: wget -q https://downloads.nordcdn.com/configs/files/ovpn_tcp/servers/ch198.nordvpn.com.tcp.ovpn -O ch.ovpn
       - name: Connect to NordVPN Switzerland
         run: |
           printf '%s\n%s\n' "${{ secrets.NORDVPN_USER }}" "${{ secrets.NORDVPN_PASS }}" > /tmp/vpncreds.txt
           chmod 600 /tmp/vpncreds.txt
-          sudo openvpn --config ch.ovpn --auth-user-pass /tmp/vpncreds.txt --daemon --log /tmp/vpn.log
-          for i in $(seq 1 20); do
-            sleep 2
-            COUNTRY=$(curl -s --max-time 3 ipinfo.io/country 2>/dev/null || echo '??')
+          sudo openvpn --config vpn/ch.ovpn --auth-user-pass /tmp/vpncreds.txt --daemon --log /tmp/vpn.log
+          for i in $(seq 1 40); do
+            sleep 1
+            COUNTRY=$(curl -s --max-time 2 ipinfo.io/country 2>/dev/null || echo '??')
             echo "Attempt $i: country=$COUNTRY"
             if [ "$COUNTRY" = "CH" ]; then echo "VPN OK — Switzerland"; break; fi
-            if [ "$i" = "20" ]; then echo "ERROR: VPN timeout"; tail -20 /tmp/vpn.log; exit 1; fi
+            if [ "$i" = "40" ]; then echo "ERROR: VPN timeout"; tail -20 /tmp/vpn.log; exit 1; fi
           done
       - name: Cache installed Python packages
         id: pylocal-cache
