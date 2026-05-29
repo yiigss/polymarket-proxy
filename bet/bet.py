@@ -1,32 +1,27 @@
 #!/usr/bin/env python3
 """
-bet.py — place a Polymarket CLOB order from a Swiss IP via GitHub Actions
+bet.py — place a Polymarket CLOB order from a Swiss IP
 Usage: python3 bet.py <up|down> <amount_usdc> <candle_open_time_ms>
 
 Uses the new Polymarket V2 SDK (polymarket-client) after py-clob-client was
 archived in April 2026 due to CLOB v2 migration.
 """
-import os, sys, json, traceback, random
+import os, sys, json, traceback
 from decimal import Decimal
 import requests as req_lib
 
-# ── SOCKS5 routing (Fly.io persistent server path) ──────────────────────────
-# When SOCKS5_PROXY is set (format: user:pass@ip:port), patch all sockets so
-# every outbound connection — including the polymarket-client SDK — routes
-# through the NordVPN Switzerland SOCKS5 exit node.
+# Optional SOCKS5 routing — activated when SOCKS5_PROXY env var is set
+# (format: user:pass@ip:port). Not used in GHA path — VPN handles routing at OS level.
 _socks5 = os.environ.get("SOCKS5_PROXY")
 if _socks5:
     try:
         import socks as _socks_lib, socket as _socket_lib
-        _auth, _addr    = _socks5.rsplit("@", 1)
-        _user, _pass    = _auth.split(":", 1)
-        _ip,   _port    = _addr.rsplit(":", 1)
-        _socks_lib.set_default_proxy(
-            _socks_lib.HTTP, _ip, int(_port),
-            username=_user, password=_pass
-        )
+        _auth, _addr = _socks5.rsplit("@", 1)
+        _user, _pass = _auth.split(":", 1)
+        _ip,   _port = _addr.rsplit(":", 1)
+        _socks_lib.set_default_proxy(_socks_lib.SOCKS5, _ip, int(_port), username=_user, password=_pass)
         _socket_lib.socket = _socks_lib.socksocket
-        print(f"[HTTP-proxy] Patched all sockets → {_ip}:{_port}", flush=True)
+        print(f"[SOCKS5] Patched all sockets -> {_ip}:{_port}", flush=True)
     except Exception as _e:
         print(f"[SOCKS5] Setup failed: {_e}", flush=True)
 
@@ -43,15 +38,12 @@ def get_btc5m_market(candle_open_ms: int) -> dict:
     if not events:
         raise RuntimeError(f"No market for slug {slug}")
     mkt = events[0]["markets"][0]
-
-    outcomes  = json.loads(mkt.get("outcomes",  "[]"))
-    token_ids = json.loads(mkt.get("clobTokenIds", "[]"))
+    outcomes  = json.loads(mkt.get("outcomes",      "[]"))
+    token_ids = json.loads(mkt.get("clobTokenIds",  "[]"))
     prices    = json.loads(mkt.get("outcomePrices", "[]"))
     neg_risk  = mkt.get("negRisk", False)
-
     up_idx   = next(i for i, o in enumerate(outcomes) if o.lower() == "up")
     down_idx = next(i for i, o in enumerate(outcomes) if o.lower() == "down")
-
     return {
         "slug":       slug,
         "up_token":   token_ids[up_idx],
@@ -74,7 +66,6 @@ def main():
 
     private_key = os.environ["POLYMARKET_PRIVATE_KEY"]
     wallet      = os.environ["POLYMARKET_WALLET_ADDRESS"]
-
     if not private_key.startswith("0x"):
         private_key = "0x" + private_key
 
@@ -87,41 +78,30 @@ def main():
     market   = get_btc5m_market(candle_ms)
     token_id = market["up_token"]  if side_str == "up"   else market["down_token"]
     price    = market["up_price"]  if side_str == "up"   else market["down_price"]
-    eff_amt  = amount
     print(f"[Market] {market['slug']} | price={price} | negRisk={market['neg_risk']}")
 
-    # ── New V2 SDK (polymarket-client) ─────────────────────────────────────
     from polymarket import SecureClient
     from polymarket.errors import RequestRejectedError, UserInputError
 
     print(f"[SDK] Creating SecureClient for wallet={wallet[:10]}...")
-    client = SecureClient.create(
-        private_key=private_key,
-        wallet=wallet,
-    )
+    client = SecureClient.create(private_key=private_key, wallet=wallet)
 
-    print(f"[Order] Placing FAK BUY market order: token={token_id[:20]}... amount=${eff_amt}")
+    print(f"[Order] Placing FAK BUY: token={token_id[:20]}... amount=${amount}")
     try:
         response = client.place_market_order(
             token_id=token_id,
             side="BUY",
-            amount=Decimal(str(eff_amt)),
+            amount=Decimal(str(amount)),
             order_type="FAK",
         )
         print(f"[OK] Order placed! id={response.order_id} status={response.status}")
         sys.exit(0)
     except RequestRejectedError as e:
-        print(f"[Error] RequestRejectedError: {e}")
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"[Error] RequestRejectedError: {e}"); traceback.print_exc(); sys.exit(1)
     except UserInputError as e:
-        print(f"[Error] UserInputError: {e}")
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"[Error] UserInputError: {e}"); traceback.print_exc(); sys.exit(1)
     except Exception as e:
-        print(f"[Error] {type(e).__name__}: {e}")
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"[Error] {type(e).__name__}: {e}"); traceback.print_exc(); sys.exit(1)
 
 
 if __name__ == "__main__":
