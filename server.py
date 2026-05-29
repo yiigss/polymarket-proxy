@@ -71,9 +71,9 @@ class Handler(BaseHTTPRequestHandler):
         nordvpn_user = os.environ["NORDVPN_SERVICE_USERNAME"]
         nordvpn_pass = os.environ["NORDVPN_SERVICE_PASSWORD"]
         server_ip    = random.choice(CH_SOCKS5_SERVERS)
-        socks5_proxy = f"{nordvpn_user}:{nordvpn_pass}@{server_ip}:1080"
+        socks5_proxy = f"{nordvpn_user}:{nordvpn_pass}@{server_ip}:80"
 
-        print(f"[Bet] {side} ${amount} via SOCKS5 {server_ip}", flush=True)
+        print(f"[Bet] {side} ${amount} via HTTP-proxy {server_ip}:80", flush=True)
 
         env = {**os.environ, "SOCKS5_PROXY": socks5_proxy}
 

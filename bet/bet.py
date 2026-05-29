@@ -22,11 +22,11 @@ if _socks5:
         _user, _pass    = _auth.split(":", 1)
         _ip,   _port    = _addr.rsplit(":", 1)
         _socks_lib.set_default_proxy(
-            _socks_lib.SOCKS5, _ip, int(_port),
+            _socks_lib.HTTP, _ip, int(_port),
             username=_user, password=_pass
         )
         _socket_lib.socket = _socks_lib.socksocket
-        print(f"[SOCKS5] Patched all sockets → {_ip}:{_port}", flush=True)
+        print(f"[HTTP-proxy] Patched all sockets → {_ip}:{_port}", flush=True)
     except Exception as _e:
         print(f"[SOCKS5] Setup failed: {_e}", flush=True)
 
