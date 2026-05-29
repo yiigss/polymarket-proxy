@@ -3,15 +3,64 @@
 bet.py — place a Polymarket CLOB order from a Swiss IP via GitHub Actions
 Usage: python3 bet.py <up|down> <amount_usdc> <candle_open_time_ms>
 """
-import os, sys, json, traceback, time, hmac, hashlib, base64
+import os, sys, json, traceback
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, MarketOrderArgs, OrderType
 from py_clob_client.constants import POLYGON
-from py_clob_client.utilities import order_to_json
 import requests as req_lib
 
 CLOB_HOST = "https://clob.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
+
+# ─── patch HTTP helpers to log body + try version field ────────────────────
+import py_clob_client.http_helpers.helpers as _hh
+
+_original_request = _hh.request
+_version_results: list = []   # filled by patched request; [(version, status, resp)]
+
+def _patched_request(endpoint, method, headers=None, data=None):
+    """On POST /order, log body and try version combos; return first success."""
+    global _version_results
+    if method == "POST" and endpoint.endswith("/order"):
+        # Serialize once so we can see it
+        if isinstance(data, dict):
+            base_str = json.dumps(data, default=str)
+        else:
+            base_str = str(data) if data else "{}"
+        print(f"[HTTP] POST {endpoint}")
+        print(f"[Body0] {base_str[:600]}")
+
+        # Try: no version, outer=2 (int), outer="2" (str)
+        combos = [(None, None), (2, None), ("2", None), (None, 2), (None, "2"), (2, 2)]
+        last_err = None
+        for outer_v, inner_v in combos:
+            body = json.loads(base_str)
+            if outer_v is not None:
+                body["version"] = outer_v
+            if inner_v is not None:
+                body.setdefault("order", {})
+                body["order"]["version"] = inner_v
+            body_str = json.dumps(body, separators=(",", ":"))
+            print(f"[Try] outer={outer_v!r} inner={inner_v!r}")
+            try:
+                resp = _original_request(endpoint, method, headers, body_str)
+                print(f"[Resp] OK: {str(resp)[:300]}")
+                _version_results.append(("ok", outer_v, inner_v, resp))
+                return resp
+            except Exception as e:
+                err_str = str(e)
+                print(f"[Resp] Error: {err_str[:200]}")
+                _version_results.append(("err", outer_v, inner_v, err_str))
+                last_err = e
+                if "version" not in err_str.lower() and "mismatch" not in err_str.lower():
+                    # Non-version error — no point trying more versions
+                    print("[Stop] Non-version error, halting version loop")
+                    raise
+        raise last_err
+    return _original_request(endpoint, method, headers, data)
+
+_hh.request = _patched_request
+# ───────────────────────────────────────────────────────────────────────────
 
 
 def get_btc5m_market(candle_open_ms: int) -> dict:
@@ -41,55 +90,6 @@ def get_btc5m_market(candle_open_ms: int) -> dict:
         "down_price": float(prices[down_idx]),
         "neg_risk":   neg_risk,
     }
-
-
-def l2_headers(api_key: str, api_secret: str, passphrase: str, funder: str,
-               method: str, path: str, body: str = "") -> dict:
-    ts  = str(int(time.time()))
-    msg = ts + method + path + body
-    raw = base64.b64decode(api_secret)
-    sig = base64.b64encode(
-        hmac.new(raw, msg.encode("utf-8"), hashlib.sha256).digest()
-    ).decode("utf-8")
-    return {
-        "POLY_ADDRESS":    funder,
-        "POLY_SIGNATURE":  sig,
-        "POLY_TIMESTAMP":  ts,
-        "POLY_API_KEY":    api_key,
-        "POLY_PASSPHRASE": passphrase,
-        "Content-Type":    "application/json",
-    }
-
-
-def post_order_manual(api_key, api_secret, passphrase, funder,
-                      order_dict: dict, signature: str,
-                      order_type: str = "FOK",
-                      outer_version=None, inner_version=None) -> tuple:
-    """POST the signed order directly, optionally injecting version fields."""
-    inner = dict(order_dict)
-    if inner_version is not None:
-        inner["version"] = inner_version
-
-    body_dict = {
-        "order":     inner,
-        "signature": signature,
-        "owner":     api_key,
-        "orderType": order_type,
-    }
-    if outer_version is not None:
-        body_dict["version"] = outer_version
-
-    body_str = json.dumps(body_dict, separators=(",", ":"))
-    hdrs = l2_headers(api_key, api_secret, passphrase, funder, "POST", "/order", body_str)
-
-    label = f"outer={outer_version!r} inner={inner_version!r}"
-    print(f"[POST] /order  {label}")
-    print(f"[Body] {body_str[:600]}")
-
-    resp = req_lib.post(f"{CLOB_HOST}/order", headers=hdrs, data=body_str, timeout=20)
-    data = resp.json() if resp.content else {}
-    print(f"[Resp] {resp.status_code} {json.dumps(data)}")
-    return resp.status_code, data
 
 
 def main():
@@ -124,72 +124,43 @@ def main():
     if eff_amt != amount:
         print(f"[Bet] Amount ${amount} < $15 minimum — using ${eff_amt}")
 
-    print(f"[Market] {market['slug']} | negRisk={market['neg_risk']} | price={price}")
+    print(f"[Market] {market['slug']} | price={price} | negRisk={market['neg_risk']}")
 
-    # Clamp price to valid range (market might have resolved partially)
+    # Clamp price to valid range (0.01–0.99)
     if not (0.01 <= price <= 0.99):
-        print(f"[Warn] Price {price} outside valid range — clamping to 0.05/0.95")
+        print(f"[Warn] Price {price} out of range — clamping")
         price = max(0.05, min(0.95, price))
 
     creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=passphrase)
 
+    # SignatureType: EOA=0, POLY_PROXY=1
     for sig_type, sig_label in [(1, "POLY_PROXY"), (0, "EOA")]:
         print(f"\n[Order] sig_type={sig_type} ({sig_label})")
         try:
             client = ClobClient(
-                CLOB_HOST,
-                key=private_key,
-                chain_id=POLYGON,
-                creds=creds,
-                funder=funder,
-                signature_type=sig_type,
+                CLOB_HOST, key=private_key, chain_id=POLYGON,
+                creds=creds, funder=funder, signature_type=sig_type,
             )
             order_args = MarketOrderArgs(
-                token_id=token_id,
-                price=price,
-                amount=eff_amt,
-                side="BUY",
+                token_id=token_id, price=price, amount=eff_amt, side="BUY",
             )
             signed = client.create_market_order(order_args)
-
-            # Use the library's own serializer — avoids Uint/enum conversion issues
-            # order_to_json returns a dict (despite the name)
-            canonical  = order_to_json(signed, api_key, OrderType.FOK)
-            if isinstance(canonical, str):
-                canonical = json.loads(canonical)
-            order_dict = canonical["order"]
-            signature  = canonical["signature"]
-            print(f"[Order] makerAmount={order_dict.get('makerAmount')} takerAmount={order_dict.get('takerAmount')} signatureType={order_dict.get('signatureType')}")
-
-            # Try all combinations of version placement that could fix order_version_mismatch:
-            # (outer_version, inner_version)
-            version_combos = [
-                (None,  None),   # original format — no version anywhere
-                (2,     None),   # outer body integer
-                ("2",   None),   # outer body string
-                (None,  2),      # inner order integer
-                (None,  "2"),    # inner order string
-                (2,     2),      # both integer
-            ]
-            for outer_v, inner_v in version_combos:
-                status, resp = post_order_manual(
-                    api_key, api_secret, passphrase, funder,
-                    order_dict, signature,
-                    outer_version=outer_v, inner_version=inner_v,
-                )
-                err = resp.get("error", "")
-                if status == 200 and (resp.get("success") or resp.get("orderID") or resp.get("order")):
-                    oid = resp.get("orderID") or (resp.get("order") or {}).get("id") or "?"
-                    print(f"[OK] PLACED! {sig_label} outer={outer_v!r} inner={inner_v!r} id={oid} ${eff_amt}@{price}")
-                    sys.exit(0)
-                if err and "version" not in str(err):
-                    print(f"[Skip] Non-version error '{err}' — stop trying versions for this sig_type")
-                    break
+            print(f"[Order] Created market order, posting...")
+            # post_order internally calls _patched_request which tries all version combos
+            resp = client.post_order(signed, OrderType.FOK)
+            # If we get here without exception, the post succeeded
+            print(f"[OK] Post succeeded! resp={resp}")
+            oid = (resp or {}).get("orderID") or (resp or {}).get("order", {}).get("id") or "?"
+            print(f"[OK] Order placed via {sig_label}! id={oid} ${eff_amt}@{price}")
+            sys.exit(0)
 
         except Exception as e:
-            print(f"[{sig_label}] create_order exception: {e}")
+            print(f"[{sig_label}] failed: {e}")
             traceback.print_exc()
 
+    print("\n[Results summary]")
+    for r in _version_results:
+        print(" ", r)
     raise RuntimeError("All attempts exhausted — order not placed")
 
 
