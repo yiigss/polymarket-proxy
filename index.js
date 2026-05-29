@@ -4,15 +4,26 @@ const https = require("https");
 const PORT = process.env.PORT || 3000;
 const TARGET = "https://clob.polymarket.com";
 
+// Strip any header that could reveal the originating client's IP or country.
+// Cloudflare (used by Render) adds CF-IPCountry, CF-Ray, CF-Visitor etc. using
+// the *caller's* IP — which is Replit (US). We must drop all of them so
+// Polymarket only sees the Frankfurt server IP.
 const STRIP_HEADERS = new Set([
   "x-forwarded-for",
-  "x-real-ip",
-  "cf-connecting-ip",
-  "true-client-ip",
   "x-forwarded-host",
   "x-forwarded-proto",
   "x-forwarded-port",
+  "x-real-ip",
   "forwarded",
+  // Cloudflare headers (set based on the caller's IP, not the server's)
+  "cf-connecting-ip",
+  "cf-ipcountry",
+  "cf-ray",
+  "cf-visitor",
+  "cf-ew-via",
+  "cf-worker",
+  "true-client-ip",
+  "cdn-loop",
 ]);
 
 const server = http.createServer((req, res) => {
@@ -41,7 +52,7 @@ const server = http.createServer((req, res) => {
     headers: {},
   };
 
-  // Forward headers, stripping IP leakers
+  // Forward headers, stripping anything that leaks the caller's origin
   for (const [k, v] of Object.entries(req.headers)) {
     if (!STRIP_HEADERS.has(k.toLowerCase()) && k.toLowerCase() !== "host") {
       options.headers[k] = v;
