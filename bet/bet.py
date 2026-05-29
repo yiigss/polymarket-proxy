@@ -93,6 +93,7 @@ def main():
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 amount=eff_amt,
+                side="BUY",
             )
             signed = client.create_market_order(order_args)
             print(f"[Order] Signed order keys: {list(signed.__dict__.keys()) if hasattr(signed,'__dict__') else type(signed)}")
