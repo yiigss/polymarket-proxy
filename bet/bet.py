@@ -87,21 +87,34 @@ def main():
     client = SecureClient.create(private_key=private_key, wallet=wallet)
 
     print(f"[Order] Placing FAK BUY: token={token_id[:20]}... amount=${amount}")
-    try:
-        response = client.place_market_order(
-            token_id=token_id,
-            side="BUY",
-            amount=Decimal(str(amount)),
-            order_type="FAK",
-        )
-        print(f"[OK] Order placed! id={response.order_id} status={response.status}")
-        sys.exit(0)
-    except RequestRejectedError as e:
-        print(f"[Error] RequestRejectedError: {e}"); traceback.print_exc(); sys.exit(1)
-    except UserInputError as e:
-        print(f"[Error] UserInputError: {e}"); traceback.print_exc(); sys.exit(1)
-    except Exception as e:
-        print(f"[Error] {type(e).__name__}: {e}"); traceback.print_exc(); sys.exit(1)
+    import time as _time
+    MAX_ATTEMPTS = 5
+    RETRY_DELAY  = 5  # seconds between retries
+    NO_MATCH_MSG = "no orders found to match"
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            response = client.place_market_order(
+                token_id=token_id,
+                side="BUY",
+                amount=Decimal(str(amount)),
+                order_type="FAK",
+            )
+            print(f"[OK] Order placed! attempt={attempt} id={response.order_id} status={response.status}")
+            sys.exit(0)
+        except RequestRejectedError as e:
+            msg = str(e).lower()
+            if NO_MATCH_MSG in msg and attempt < MAX_ATTEMPTS:
+                print(f"[Retry {attempt}/{MAX_ATTEMPTS}] No liquidity yet — waiting {RETRY_DELAY}s...")
+                _time.sleep(RETRY_DELAY)
+                continue
+            print(f"[Error] RequestRejectedError (attempt {attempt}): {e}")
+            traceback.print_exc()
+            sys.exit(1)
+        except UserInputError as e:
+            print(f"[Error] UserInputError: {e}"); traceback.print_exc(); sys.exit(1)
+        except Exception as e:
+            print(f"[Error] {type(e).__name__}: {e}"); traceback.print_exc(); sys.exit(1)
 
 
 if __name__ == "__main__":
