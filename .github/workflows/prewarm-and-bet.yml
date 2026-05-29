@@ -1,0 +1,65 @@
+name: Pre-warm and Bet
+on:
+  workflow_dispatch:
+    inputs:
+      signal_url:
+        description: "URL to poll for bet signal (e.g. https://<domain>/api/btc/bet-signal)"
+        required: true
+        type: string
+jobs:
+  prewarm-and-bet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenVPN
+        run: sudo apt-get install -y -qq openvpn
+      - name: Connect to NordVPN Switzerland
+        run: |
+          printf '%s\n%s\n' "${{ secrets.NORDVPN_USER }}" "${{ secrets.NORDVPN_PASS }}" > /tmp/vpncreds.txt
+          chmod 600 /tmp/vpncreds.txt
+          sudo openvpn --config vpn/ch.ovpn --auth-user-pass /tmp/vpncreds.txt --daemon --log /tmp/vpn.log
+          for i in $(seq 1 40); do
+            sleep 1
+            COUNTRY=$(curl -s --max-time 2 ipinfo.io/country 2>/dev/null || echo '??')
+            echo "Attempt $i: country=$COUNTRY"
+            if [ "$COUNTRY" = "CH" ]; then echo "VPN OK — Switzerland"; break; fi
+            if [ "$i" = "40" ]; then echo "ERROR: VPN timeout"; tail -20 /tmp/vpn.log; exit 1; fi
+          done
+      - name: Cache installed Python packages
+        id: pylocal-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: pylocal-polymarket-v1-${{ runner.os }}
+      - name: Install Python dependencies
+        if: steps.pylocal-cache.outputs.cache-hit != 'true'
+        run: pip3 install --quiet --pre 'polymarket-client>=0.1.0b3' requests PySocks
+      - name: Wait for signal and place bet
+        env:
+          POLYMARKET_PRIVATE_KEY:    ${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          POLYMARKET_WALLET_ADDRESS: ${{ secrets.POLYMARKET_WALLET_ADDRESS }}
+          SIGNAL_SECRET:             ${{ secrets.SIGNAL_SECRET }}
+        run: |
+          echo "Runner warm — VPN connected, Python ready. Polling: ${{ inputs.signal_url }}"
+          for i in $(seq 1 750); do
+            RESP=$(curl -s --max-time 5 \
+              -H "X-Signal-Secret: $SIGNAL_SECRET" \
+              "${{ inputs.signal_url }}" 2>/dev/null || echo '{"status":"waiting"}')
+            STATUS=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','waiting'))" 2>/dev/null || echo "waiting")
+            echo "Poll $i: status=$STATUS"
+            if [ "$STATUS" = "fire" ]; then
+              SIDE=$(echo "$RESP"     | python3 -c "import sys,json; print(json.load(sys.stdin)['side'])")
+              AMOUNT=$(echo "$RESP"   | python3 -c "import sys,json; print(json.load(sys.stdin)['amount'])")
+              CANDLE_MS=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['candle_ms'])")
+              echo "Firing bet: $SIDE $$AMOUNT candle=$CANDLE_MS"
+              python3 bet/bet.py "$SIDE" "$AMOUNT" "$CANDLE_MS"
+              exit 0
+            elif [ "$STATUS" = "abort" ]; then
+              echo "Signal aborted — exiting cleanly"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Timeout: no signal received after 25 min"
+          exit 1
