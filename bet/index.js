@@ -6,7 +6,7 @@
  * All Polymarket credentials come from environment variables (GHA secrets).
  * No proxy needed — we have a Swiss IP via NordVPN.
  */
-const { ClobClient, Side, OrderType, AssetType } = require("@polymarket/clob-client");
+const { ClobClient, Side, OrderType, SignatureType } = require("@polymarket/clob-client");
 const { ethers } = require("ethers");
 
 const CLOB_HOST = "https://clob.polymarket.com";
@@ -30,6 +30,7 @@ async function getBtc5mMarket(candleOpenTimeMs) {
   const outcomes  = JSON.parse(mkt.outcomes  ?? "[]");
   const tokenIds  = JSON.parse(mkt.clobTokenIds ?? "[]");
   const prices    = JSON.parse(mkt.outcomePrices ?? "[]");
+  const negRisk   = mkt.negRisk ?? false;
 
   const upIdx   = outcomes.findIndex(o => o.toLowerCase() === "up");
   const downIdx = outcomes.findIndex(o => o.toLowerCase() === "down");
@@ -41,7 +42,20 @@ async function getBtc5mMarket(candleOpenTimeMs) {
     downTokenId: tokenIds[downIdx],
     upPrice:     parseFloat(prices[upIdx]   ?? "0.5"),
     downPrice:   parseFloat(prices[downIdx] ?? "0.5"),
+    negRisk,
   };
+}
+
+async function tryPlaceOrder(client, tokenId, effectiveAmount, negRisk) {
+  const orderArgs = {
+    tokenID: tokenId,
+    amount:  effectiveAmount,
+    side:    Side.BUY,
+    ...(negRisk ? { negRisk: true } : {}),
+  };
+  const result = await client.createAndPostMarketOrder(orderArgs, undefined, OrderType.FOK);
+  console.log(`[Order] Raw response: ${JSON.stringify(result)}`);
+  return result;
 }
 
 async function main() {
@@ -69,7 +83,6 @@ async function main() {
 
   const pk     = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
   const wallet = new ethers.Wallet(pk);
-  const client = new ClobClient(CLOB_HOST, CHAIN_ID, wallet, { key, secret, passphrase }, 0, funder);
 
   // ── Verify we are in Switzerland ────────────────────────────────────────────
   const ipResp = await fetch("https://ipinfo.io/json");
@@ -84,7 +97,7 @@ async function main() {
   const tokenId = side === "up" ? market.upTokenId : market.downTokenId;
   const price   = side === "up" ? market.upPrice   : market.downPrice;
 
-  console.log(`[Market] ${market.slug} | token=${tokenId.slice(0,12)}... | price=${price}`);
+  console.log(`[Market] ${market.slug} | negRisk=${market.negRisk} | token=${tokenId.slice(0,12)}... | price=${price}`);
 
   // Polymarket minimum order is $15; respect it silently
   const effectiveAmount = Math.max(amount, 15);
@@ -92,22 +105,26 @@ async function main() {
     console.log(`[Bet] Amount $${amount} below $15 minimum — using $${effectiveAmount}`);
   }
 
-  // ── Place order ─────────────────────────────────────────────────────────────
-  const result = await client.createAndPostMarketOrder(
-    { tokenID: tokenId, amount: effectiveAmount, side: Side.BUY },
-    undefined,
-    OrderType.FOK
-  );
-
-  console.log(`[Order] Raw response: ${JSON.stringify(result)}`);
-
-  const errMsg = result?.errorMsg ?? result?.error ?? result?.message;
-  if (!result?.success && errMsg) {
-    throw new Error(`CLOB rejected: ${errMsg}`);
+  // ── Place order — try POLY_PROXY (1) first, fall back to EOA (0) ─────────────
+  let result;
+  for (const sigType of [SignatureType.POLY_PROXY, SignatureType.EOA]) {
+    const label = sigType === SignatureType.POLY_PROXY ? "POLY_PROXY" : "EOA";
+    console.log(`[Order] Attempting with SignatureType.${label} (${sigType})`);
+    const client = new ClobClient(CLOB_HOST, CHAIN_ID, wallet, { key, secret, passphrase }, sigType, funder);
+    result = await tryPlaceOrder(client, tokenId, effectiveAmount, market.negRisk);
+    const errMsg = result?.errorMsg ?? result?.error ?? result?.message;
+    if (result?.success) {
+      console.log(`[OK] Order placed with ${label}!`);
+      break;
+    }
+    console.log(`[Warn] ${label} failed: ${errMsg} — trying next sig type`);
+    if (sigType === SignatureType.EOA) {
+      throw new Error(`CLOB rejected all sig types. Last error: ${errMsg}`);
+    }
   }
 
   const orderId = result?.orderID ?? result?.order_id ?? result?.id ?? "unknown";
-  console.log(`[OK] Order placed! id=${orderId} amount=$${effectiveAmount} price=${price}`);
+  console.log(`[OK] Order id=${orderId} amount=$${effectiveAmount} price=${price}`);
   console.log(`::set-output name=order_id::${orderId}`);
   console.log(`::set-output name=amount::${effectiveAmount}`);
 }
