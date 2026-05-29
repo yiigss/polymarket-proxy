@@ -1,0 +1,9 @@
+{
+  "name": "polymarket-bet",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@polymarket/clob-client": "^5.8.1",
+    "ethers": "^5.8.0"
+  }
+}
