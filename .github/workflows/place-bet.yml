@@ -20,66 +20,19 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Connect to NordVPN Switzerland via WireGuard
-        env:
-          NORDVPN_EMAIL:    ${{ secrets.NORDVPN_EMAIL }}
-          NORDVPN_PASSWORD: ${{ secrets.NORDVPN_PASSWORD }}
+      - name: Install OpenVPN
+        run: sudo apt-get install -y -qq openvpn
+      - name: Connect to NordVPN Switzerland
         run: |
-          set -e
-          echo "==> Fetching NordVPN access token (JSON body)..."
-          TOKEN_RESP=$(curl -s -X POST "https://api.nordvpn.com/v1/users/tokens" \
-            -H "Content-Type: application/json" \
-            -d "{\"username\":\"${NORDVPN_EMAIL}\",\"password\":\"${NORDVPN_PASSWORD}\"}")
-          echo "Token response length: ${#TOKEN_RESP}"
-          TOKEN=$(echo "$TOKEN_RESP" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          t = d.get('token') or d.get('access_token') or ''
-          if not t:
-              print('ERROR: no token in response:', json.dumps(d)[:200], file=sys.stderr)
-              sys.exit(1)
-          print(t)
-          ")
-          echo "Token OK (${#TOKEN} chars)"
-          echo "==> Fetching WireGuard private key..."
-          CRED_RESP=$(curl -s \
-            -H "Authorization: token:${TOKEN}" \
-            "https://api.nordvpn.com/v1/users/services/credentials")
-          WG_PRIVATE_KEY=$(echo "$CRED_RESP" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          k = d.get('nordlynx_private_key') or ''
-          if not k:
-              print('ERROR: no nordlynx_private_key in response:', json.dumps(d)[:200], file=sys.stderr)
-              sys.exit(1)
-          print(k)
-          ")
-          echo "Private key OK (${#WG_PRIVATE_KEY} chars)"
-          echo "==> Finding best NordVPN Switzerland WireGuard server..."
-          SERVER_JSON=$(curl -s "https://api.nordvpn.com/v1/servers/recommendations?filters%5Bservers_technologies%5D%5Bidentifier%5D=wireguard_udp&filters%5Bcountry_id%5D=209&limit=1")
-          SERVER_IP=$(echo "$SERVER_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['station'])")
-          SERVER_PUBKEY=$(echo "$SERVER_JSON" | python3 -c "
-          import sys, json
-          s = json.load(sys.stdin)[0]
-          wg = next(t for t in s['technologies'] if t['identifier'] == 'wireguard_udp')
-          print(next(m['value'] for m in wg['metadata'] if m['name'] == 'public_key'))
-          ")
-          echo "Server: ${SERVER_IP}  pubkey: ${SERVER_PUBKEY:0:24}..."
-          echo "==> Writing WireGuard config..."
-          sudo mkdir -p /etc/wireguard
-          printf '[Interface]\nPrivateKey = %s\nAddress = 10.5.0.2/32\n\n[Peer]\nPublicKey = %s\nEndpoint = %s:51820\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25\n' \
-            "$WG_PRIVATE_KEY" "$SERVER_PUBKEY" "$SERVER_IP" \
-            | sudo tee /etc/wireguard/wg0.conf > /dev/null
-          sudo chmod 600 /etc/wireguard/wg0.conf
-          echo "==> Bringing up WireGuard..."
-          sudo wg-quick up wg0
-          echo "==> Verifying Swiss IP..."
-          for i in $(seq 1 15); do
+          printf '%s\n%s\n' "${{ secrets.NORDVPN_USER }}" "${{ secrets.NORDVPN_PASS }}" > /tmp/vpncreds.txt
+          chmod 600 /tmp/vpncreds.txt
+          sudo openvpn --config vpn/ch.ovpn --auth-user-pass /tmp/vpncreds.txt --daemon --log /tmp/vpn.log
+          for i in $(seq 1 40); do
             sleep 1
             COUNTRY=$(curl -s --max-time 2 ipinfo.io/country 2>/dev/null || echo '??')
             echo "Attempt $i: country=$COUNTRY"
             if [ "$COUNTRY" = "CH" ]; then echo "VPN OK — Switzerland"; break; fi
-            if [ "$i" = "15" ]; then echo "ERROR: not CH after WireGuard up"; sudo wg show; exit 1; fi
+            if [ "$i" = "40" ]; then echo "ERROR: VPN timeout"; tail -20 /tmp/vpn.log; exit 1; fi
           done
       - name: Cache installed Python packages
         id: pylocal-cache
