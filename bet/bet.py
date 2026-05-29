@@ -6,9 +6,29 @@ Usage: python3 bet.py <up|down> <amount_usdc> <candle_open_time_ms>
 Uses the new Polymarket V2 SDK (polymarket-client) after py-clob-client was
 archived in April 2026 due to CLOB v2 migration.
 """
-import os, sys, json, traceback
+import os, sys, json, traceback, random
 from decimal import Decimal
 import requests as req_lib
+
+# ── SOCKS5 routing (Fly.io persistent server path) ──────────────────────────
+# When SOCKS5_PROXY is set (format: user:pass@ip:port), patch all sockets so
+# every outbound connection — including the polymarket-client SDK — routes
+# through the NordVPN Switzerland SOCKS5 exit node.
+_socks5 = os.environ.get("SOCKS5_PROXY")
+if _socks5:
+    try:
+        import socks as _socks_lib, socket as _socket_lib
+        _auth, _addr    = _socks5.rsplit("@", 1)
+        _user, _pass    = _auth.split(":", 1)
+        _ip,   _port    = _addr.rsplit(":", 1)
+        _socks_lib.set_default_proxy(
+            _socks_lib.SOCKS5, _ip, int(_port),
+            username=_user, password=_pass
+        )
+        _socket_lib.socket = _socks_lib.socksocket
+        print(f"[SOCKS5] Patched all sockets → {_ip}:{_port}", flush=True)
+    except Exception as _e:
+        print(f"[SOCKS5] Setup failed: {_e}", flush=True)
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 
