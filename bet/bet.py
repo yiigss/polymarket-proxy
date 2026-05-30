@@ -94,28 +94,32 @@ def get_clob_balance_l1(private_key: str, wallet: str) -> float | None:
 
 def get_clob_balance_sdk(client) -> float | None:
     """Fetch CLOB USDC balance via SecureClient SDK methods."""
-    # 1. get_balance_allowance(asset_type="CASH") — the USDC deposited balance
-    for asset_type in ("CASH", "USDC", "0"):
+    # 1. get_balance_allowance(asset_type='COLLATERAL') — USDC deposited balance
+    for asset_type in ("COLLATERAL", "CONDITIONAL"):
         try:
             result = client.get_balance_allowance(asset_type=asset_type)
-            print(f"[Balance] get_balance_allowance(asset_type={asset_type!r}) → {result}", flush=True)
+            print(f"[Balance] get_balance_allowance({asset_type!r}) → {result}", flush=True)
             if isinstance(result, (int, float)):
                 return float(result)
             if isinstance(result, dict):
                 for key in ("balance", "usdc", "amount", "collateral", "USDC", "deposited", "allowance"):
                     if key in result:
                         return float(result[key])
-            if hasattr(result, "balance"):
-                return float(result.balance)
-            if hasattr(result, "allowance"):
-                return float(result.allowance)
+            for attr in ("balance", "allowance", "amount", "value"):
+                if hasattr(result, attr):
+                    return float(getattr(result, attr))
         except Exception as e:
             print(f"[Balance] get_balance_allowance({asset_type!r}) failed: {e}", flush=True)
 
-    # 2. get_portfolio_values() — total portfolio including positions
+    # 2. get_portfolio_values() — tuple of PortfolioValue(value=Decimal(...))
     try:
         result = client.get_portfolio_values()
         print(f"[Balance] get_portfolio_values() → {result}", flush=True)
+        # result is a tuple — take the first element's .value
+        if isinstance(result, (list, tuple)) and len(result) > 0:
+            item = result[0]
+            if hasattr(item, "value"):
+                return float(item.value)
         if isinstance(result, (int, float)):
             return float(result)
         if isinstance(result, dict):
