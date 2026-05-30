@@ -62,23 +62,25 @@ def main() -> None:
     print(f"[Balance] Fresh L2 key: {api_key[:8]}...", flush=True)
 
     # ── Step 3: L2 HMAC signature ───────────────────────────────────────────
+    # SDK signs just the path (no query string) — params are appended by httpx separately
     ts_l2 = int(time.time())
-    path  = "/balance-allowance?asset_type=COLLATERAL"
     sig_l2 = build_hmac_signature(
         secret=secret_b64,
         timestamp=ts_l2,
         method="GET",
-        path=path,
+        path="/balance-allowance",
     )
 
     # ── Step 4: Fetch CLOB balance ─────────────────────────────────────────
     r_bal = requests.get(
-        f"https://clob.polymarket.com{path}",
+        "https://clob.polymarket.com/balance-allowance",
+        params={"asset_type": "COLLATERAL"},
         headers={
-            "POLY-API-KEY":    api_key,
-            "POLY-SIGNATURE":  sig_l2,
-            "POLY-TIMESTAMP":  str(ts_l2),
-            "POLY-PASSPHRASE": passphrase,
+            "POLY_ADDRESS":    wallet,
+            "POLY_API_KEY":    api_key,
+            "POLY_SIGNATURE":  sig_l2,
+            "POLY_TIMESTAMP":  str(ts_l2),
+            "POLY_PASSPHRASE": passphrase,
         },
         timeout=20,
     )
