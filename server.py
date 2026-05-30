@@ -60,10 +60,11 @@ class Handler(BaseHTTPRequestHandler):
             import urllib.request as _urllib
             ts  = str(int(time.time()))
             msg = ts + "GET" + "/balance-allowance?asset_type=COLLATERAL"
-            # Fix base64 padding — HTTP headers may strip trailing '=' chars
-            secret_padded = secret_b64 + "=" * (-len(secret_b64) % 4)
+            # Secret uses URL-safe base64 (- and _ chars). Strip and re-pad before decoding.
+            secret_stripped = secret_b64.rstrip("=")
+            secret_padded   = secret_stripped + "=" * (-len(secret_stripped) % 4)
             sig = base64.b64encode(
-                hmac.new(base64.b64decode(secret_padded), msg.encode(), hashlib.sha256).digest()  # type: ignore[attr-defined]
+                hmac.new(base64.urlsafe_b64decode(secret_padded), msg.encode(), hashlib.sha256).digest()  # type: ignore[attr-defined]
             ).decode()
             req = _urllib.Request(
                 "https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL",
