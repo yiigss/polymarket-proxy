@@ -27,6 +27,111 @@ if _socks5:
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 
+# ── On-chain USDC balance (native USDC on Polygon) ─────────────────────────
+# Used to report actual wallet balance back to the server — bypasses CLOB API entirely.
+NATIVE_USDC = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+POLYGON_RPCS = [
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://polygon-rpc.com",
+]
+
+def get_onchain_usdc(wallet: str) -> float | None:
+    """Query native USDC balance on Polygon via public RPC (no auth required)."""
+    padded = wallet.replace("0x", "").lower().zfill(64)
+    data   = "0x70a08231" + padded  # balanceOf(address)
+    for rpc in POLYGON_RPCS:
+        try:
+            r = req_lib.post(rpc, json={
+                "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                "params": [{"to": NATIVE_USDC, "data": data}, "latest"],
+            }, timeout=8)
+            result = r.json().get("result", "0x")
+            if result and result != "0x":
+                return int(result, 16) / 1_000_000
+            return 0.0
+        except Exception as e:
+            print(f"[Balance] RPC {rpc} failed: {e}", flush=True)
+    return None
+
+
+CLOB_BASE = "https://clob.polymarket.com"
+
+def get_clob_balance(client) -> float | None:
+    """Fetch deposited CLOB balance (the real Polymarket account balance) via SecureClient.
+    This is the $266 figure — funds deposited into the exchange, not raw wallet USDC."""
+    # 1. Try named SDK methods
+    for method_name in ("get_balance", "balance", "get_usdc_balance", "usdc_balance", "get_collateral_balance"):
+        method = getattr(client, method_name, None)
+        if callable(method):
+            try:
+                result = method()
+                if isinstance(result, (int, float)):
+                    return float(result)
+                if isinstance(result, dict):
+                    for key in ("balance", "usdc", "amount", "collateral"):
+                        if key in result:
+                            return float(result[key])
+                if hasattr(result, "balance"):
+                    return float(result.balance)
+            except Exception as e:
+                print(f"[Balance] SDK {method_name}() failed: {e}", flush=True)
+
+    # 2. Try the client's internal authenticated HTTP session
+    for attr in ("_session", "session", "_http", "_client", "http"):
+        sess = getattr(client, attr, None)
+        if sess is None:
+            continue
+        for path in ("/balance", "/v2/balance", "/api/balance"):
+            try:
+                r = sess.get(f"{CLOB_BASE}{path}", timeout=10)
+                if r.ok:
+                    data = r.json()
+                    for key in ("balance", "usdc", "amount", "collateral"):
+                        if key in data:
+                            print(f"[Balance] CLOB {path} → {key}={data[key]}", flush=True)
+                            return float(data[key])
+            except Exception as e:
+                print(f"[Balance] Client {attr}.get({path}) failed: {e}", flush=True)
+
+    return None
+
+
+def report_balance(wallet: str, report_url: str, signal_secret: str, client=None) -> None:
+    """Fetch CLOB deposited balance (primary) or on-chain USDC (fallback) and POST to server."""
+    balance = None
+    source  = "gha_onchain"
+
+    # Primary: CLOB deposited balance via authenticated client (shows real account funds)
+    if client is not None:
+        balance = get_clob_balance(client)
+        if balance is not None:
+            source = "gha_clob"
+            print(f"[Balance] CLOB deposited: ${balance:.4f}", flush=True)
+
+    # Fallback: raw wallet USDC on Polygon (shows only undeposited funds)
+    if balance is None:
+        balance = get_onchain_usdc(wallet)
+        if balance is not None:
+            print(f"[Balance] On-chain USDC (fallback): ${balance:.4f}", flush=True)
+
+    if balance is None:
+        print("[Balance] Could not fetch balance — skipping report", flush=True)
+        return
+
+    try:
+        r = req_lib.post(
+            report_url,
+            json={"balance": balance, "source": source},
+            headers={"X-Signal-Secret": signal_secret, "Content-Type": "application/json"},
+            timeout=8,
+        )
+        if r.ok:
+            print(f"[Balance] Reported ${balance:.4f} ({source}) to server ✓", flush=True)
+        else:
+            print(f"[Balance] Report failed: {r.status_code} {r.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"[Balance] Report POST failed: {e}", flush=True)
+
 
 def get_btc5m_market(candle_open_ms: int) -> dict:
     sec  = candle_open_ms // 1000
@@ -64,8 +169,13 @@ def main():
     candle_ms = int(candle_ms_str)
     print(f"[Bet] side={side_str} amount=${amount} candle={candle_ms}")
 
-    private_key = os.environ["POLYMARKET_PRIVATE_KEY"]
-    wallet      = os.environ["POLYMARKET_WALLET_ADDRESS"]
+    private_key   = os.environ["POLYMARKET_PRIVATE_KEY"]
+    wallet        = os.environ["POLYMARKET_WALLET_ADDRESS"]
+    signal_secret = os.environ.get("SIGNAL_SECRET", "")
+    # REPORT_URL: base URL for balance reporting (e.g. https://<domain>/api/btc/balance-report)
+    # Injected by the workflow as: REPORT_URL=$(echo "$SIGNAL_URL" | sed 's|/bet-signal|/balance-report|')
+    report_url    = os.environ.get("REPORT_URL", "")
+
     if not private_key.startswith("0x"):
         private_key = "0x" + private_key
 
@@ -101,6 +211,9 @@ def main():
                 order_type="FAK",
             )
             print(f"[OK] Order placed! attempt={attempt} id={response.order_id} status={response.status}")
+            # Report updated balance after successful bet (pass client so we get CLOB deposited balance)
+            if report_url:
+                report_balance(wallet, report_url, signal_secret, client=client)
             sys.exit(0)
         except RequestRejectedError as e:
             msg = str(e).lower()
