@@ -48,15 +48,14 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def _handle_balance(self):
-        """Fetch CLOB cash balance by deriving fresh L2 keys via NordVPN Switzerland SOCKS5.
+        """Fetch CLOB cash balance by deriving fresh L2 keys.
+        Render Frankfurt is EU — no SOCKS5 needed (same as bet.py).
         Derives a fresh L2 API key on every call (no stale credentials)."""
         import requests as req_lib
         from eth_account import Account
         from eth_account.messages import encode_defunct
 
-        private_key  = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
-        nordvpn_user = os.environ.get("NORDVPN_SERVICE_USERNAME", "")
-        nordvpn_pass = os.environ.get("NORDVPN_SERVICE_PASSWORD", "")
+        private_key = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
 
         if not private_key:
             self._send_json(503, {"error": "POLYMARKET_PRIVATE_KEY not set"})
@@ -65,15 +64,8 @@ class Handler(BaseHTTPRequestHandler):
             private_key = "0x" + private_key
 
         try:
-            server_ip = random.choice(CH_SOCKS5_SERVERS)
-            print(f"[Balance] Routing via NordVPN CH: {server_ip}", flush=True)
-            proxies = {
-                "https": f"socks5h://{nordvpn_user}:{nordvpn_pass}@{server_ip}:1080",
-                "http":  f"socks5h://{nordvpn_user}:{nordvpn_pass}@{server_ip}:1080",
-            }
-
             # ── Step 1: L1 auth — sign timestamp with private key ──────────
-            acct  = Account.from_key(private_key)
+            acct   = Account.from_key(private_key)
             wallet = acct.address
             ts_l1  = str(int(time.time()))
             msg    = encode_defunct(text=ts_l1)
@@ -83,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
                 sig_l1 = "0x" + sig_l1
             print(f"[Balance] L1 auth for wallet={wallet[:10]}...", flush=True)
 
-            # ── Step 2: Derive fresh L2 API key via /auth/api-key ──────────
+            # ── Step 2: Derive fresh L2 API key (no proxy — Render is EU) ──
             r_key = req_lib.post(
                 "https://clob.polymarket.com/auth/api-key",
                 headers={
@@ -94,7 +86,6 @@ class Handler(BaseHTTPRequestHandler):
                     "Content-Type":   "application/json",
                 },
                 json={},
-                proxies=proxies,
                 timeout=20,
             )
             if not r_key.ok:
@@ -107,7 +98,7 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[Balance] Fresh L2 key derived: {api_key[:8]}...", flush=True)
 
             # ── Step 3: L2 HMAC signature for balance request ──────────────
-            ts_l2 = str(int(time.time()))
+            ts_l2  = str(int(time.time()))
             msg_l2 = ts_l2 + "GET" + "/balance-allowance?asset_type=COLLATERAL"
             secret_stripped = secret_b64.rstrip("=")
             secret_padded   = secret_stripped + "=" * (-len(secret_stripped) % 4)
@@ -115,7 +106,7 @@ class Handler(BaseHTTPRequestHandler):
                 hmac.new(base64.urlsafe_b64decode(secret_padded), msg_l2.encode(), hashlib.sha256).digest()  # type: ignore[attr-defined]
             ).decode()
 
-            # ── Step 4: Fetch balance ───────────────────────────────────────
+            # ── Step 4: Fetch balance (no proxy) ───────────────────────────
             r_bal = req_lib.get(
                 "https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL",
                 headers={
@@ -124,7 +115,6 @@ class Handler(BaseHTTPRequestHandler):
                     "POLY-TIMESTAMP":  ts_l2,
                     "POLY-PASSPHRASE": passphrase,
                 },
-                proxies=proxies,
                 timeout=20,
             )
             body = r_bal.json()
