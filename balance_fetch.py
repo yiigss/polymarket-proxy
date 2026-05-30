@@ -10,11 +10,12 @@ Env vars:
   REPORT_URL             — https://<domain>/api/btc/balance-report
   SIGNAL_SECRET          — shared secret for X-Signal-Secret header
 """
-import os, sys, time, hmac, hashlib, base64
+import os, sys, time
 import requests
 from eth_account import Account
 from polymarket._internal.l1_auth import sign_api_key_auth
 from polymarket._internal.actions.auth import build_l1_auth_headers
+from polymarket._internal.hmac import build_hmac_signature
 
 CHAIN_ID = 137  # Polygon mainnet
 
@@ -61,21 +62,22 @@ def main() -> None:
     print(f"[Balance] Fresh L2 key: {api_key[:8]}...", flush=True)
 
     # ── Step 3: L2 HMAC signature ───────────────────────────────────────────
-    ts_l2  = str(int(time.time()))
-    msg_l2 = ts_l2 + "GET" + "/balance-allowance?asset_type=COLLATERAL"
-    secret_stripped = secret_b64.rstrip("=")
-    secret_padded   = secret_stripped + "=" * (-len(secret_stripped) % 4)
-    sig_l2 = base64.b64encode(
-        hmac.new(base64.urlsafe_b64decode(secret_padded), msg_l2.encode(), hashlib.sha256).digest()
-    ).decode()
+    ts_l2 = int(time.time())
+    path  = "/balance-allowance?asset_type=COLLATERAL"
+    sig_l2 = build_hmac_signature(
+        secret=secret_b64,
+        timestamp=ts_l2,
+        method="GET",
+        path=path,
+    )
 
     # ── Step 4: Fetch CLOB balance ─────────────────────────────────────────
     r_bal = requests.get(
-        "https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL",
+        f"https://clob.polymarket.com{path}",
         headers={
             "POLY-API-KEY":    api_key,
             "POLY-SIGNATURE":  sig_l2,
-            "POLY-TIMESTAMP":  ts_l2,
+            "POLY-TIMESTAMP":  str(ts_l2),
             "POLY-PASSPHRASE": passphrase,
         },
         timeout=20,
