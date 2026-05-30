@@ -4,7 +4,7 @@ server.py — Fly.io persistent bet server
 Accepts POST /bet, routes bet.py through NordVPN SOCKS5, returns result.
 No GHA queue, no VPN install — ~3-5s per bet.
 """
-import os, json, subprocess, random, signal, sys
+import os, json, subprocess, random, signal, sys, hashlib, hmac, time, base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 CH_SOCKS5_SERVERS = [
@@ -41,9 +41,43 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._send_json(200, {"ok": True})
+        elif self.path == "/balance":
+            self._handle_balance()
         else:
             self.send_response(404)
             self.end_headers()
+
+    def _handle_balance(self):
+        """Fetch CLOB cash balance using stored API key credentials."""
+        api_key    = os.environ.get("POLYMARKET_API_KEY", "")
+        secret_b64 = os.environ.get("POLYMARKET_SECRET", "")
+        passphrase = os.environ.get("POLYMARKET_PASSPHRASE", "")
+        if not api_key or not secret_b64 or not passphrase:
+            self._send_json(503, {"error": "CLOB credentials not configured"})
+            return
+        try:
+            import urllib.request as _urllib
+            ts  = str(int(time.time()))
+            msg = ts + "GET" + "/balance-allowance?asset_type=COLLATERAL"
+            sig = base64.b64encode(
+                hmac.new(base64.b64decode(secret_b64), msg.encode(), hashlib.sha256).digest()  # type: ignore[attr-defined]
+            ).decode()
+            req = _urllib.Request(
+                "https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL",
+                headers={
+                    "POLY-API-KEY":    api_key,
+                    "POLY-SIGNATURE":  sig,
+                    "POLY-TIMESTAMP":  ts,
+                    "POLY-PASSPHRASE": passphrase,
+                },
+            )
+            with _urllib.urlopen(req, timeout=10) as r:
+                body = json.loads(r.read().decode())
+            raw = body.get("balance", "0")
+            balance = float(raw) / 1_000_000
+            self._send_json(200, {"balance": balance, "raw": body})
+        except Exception as e:
+            self._send_json(200, {"error": str(e), "balance": None})
 
     def do_POST(self):
         if self.path != "/bet":
@@ -71,11 +105,9 @@ class Handler(BaseHTTPRequestHandler):
         nordvpn_user = os.environ["NORDVPN_SERVICE_USERNAME"]
         nordvpn_pass = os.environ["NORDVPN_SERVICE_PASSWORD"]
         server_ip    = random.choice(CH_SOCKS5_SERVERS)
-        socks5_proxy = f"{nordvpn_user}:{nordvpn_pass}@{server_ip}:80"
+        print(f"[Bet] {side} ${amount} (no proxy — Render Frankfurt is EU)", flush=True)
 
-        print(f"[Bet] {side} ${amount} via HTTP-proxy {server_ip}:80", flush=True)
-
-        env = {**os.environ, "SOCKS5_PROXY": socks5_proxy}
+        env = {**os.environ}
 
         try:
             result = subprocess.run(
