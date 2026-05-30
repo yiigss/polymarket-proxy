@@ -93,26 +93,38 @@ def get_clob_balance_l1(private_key: str, wallet: str) -> float | None:
 
 
 def get_clob_balance_sdk(client) -> float | None:
-    """Try all non-dunder SecureClient methods that might return a balance."""
-    attrs = [a for a in dir(client) if not a.startswith("_") and "balance" in a.lower()]
-    print(f"[Balance] SecureClient balance attrs: {attrs}", flush=True)
-    print(f"[Balance] SecureClient all public attrs: {[a for a in dir(client) if not a.startswith('_')]}", flush=True)
-    for method_name in attrs:
-        method = getattr(client, method_name, None)
-        if callable(method):
-            try:
-                result = method()
-                print(f"[Balance] SDK {method_name}() → {result}", flush=True)
-                if isinstance(result, (int, float)):
-                    return float(result)
-                if isinstance(result, dict):
-                    for key in ("balance", "usdc", "amount", "collateral", "USDC", "deposited"):
-                        if key in result:
-                            return float(result[key])
-                if hasattr(result, "balance"):
-                    return float(result.balance)
-            except Exception as e:
-                print(f"[Balance] SDK {method_name}() failed: {e}", flush=True)
+    """Fetch CLOB USDC balance via SecureClient SDK methods."""
+    # 1. get_balance_allowance(asset_type="CASH") — the USDC deposited balance
+    for asset_type in ("CASH", "USDC", "0"):
+        try:
+            result = client.get_balance_allowance(asset_type=asset_type)
+            print(f"[Balance] get_balance_allowance(asset_type={asset_type!r}) → {result}", flush=True)
+            if isinstance(result, (int, float)):
+                return float(result)
+            if isinstance(result, dict):
+                for key in ("balance", "usdc", "amount", "collateral", "USDC", "deposited", "allowance"):
+                    if key in result:
+                        return float(result[key])
+            if hasattr(result, "balance"):
+                return float(result.balance)
+            if hasattr(result, "allowance"):
+                return float(result.allowance)
+        except Exception as e:
+            print(f"[Balance] get_balance_allowance({asset_type!r}) failed: {e}", flush=True)
+
+    # 2. get_portfolio_values() — total portfolio including positions
+    try:
+        result = client.get_portfolio_values()
+        print(f"[Balance] get_portfolio_values() → {result}", flush=True)
+        if isinstance(result, (int, float)):
+            return float(result)
+        if isinstance(result, dict):
+            for key in ("balance", "cash", "total", "usdc", "portfolio", "value"):
+                if key in result:
+                    return float(result[key])
+    except Exception as e:
+        print(f"[Balance] get_portfolio_values() failed: {e}", flush=True)
+
     return None
 
 
