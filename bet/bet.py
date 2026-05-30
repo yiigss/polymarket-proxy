@@ -57,7 +57,7 @@ def get_onchain_usdc(wallet: str) -> float | None:
 CLOB_BASE = "https://clob.polymarket.com"
 
 def get_clob_balance_l1(private_key: str, wallet: str) -> float | None:
-    """Fetch deposited CLOB balance using direct L1 auth (ECDSA) — no SDK method guessing."""
+    """Fetch deposited CLOB balance using direct L1 auth (ECDSA, sign timestamp only)."""
     import time as _time
     try:
         from eth_account import Account
@@ -68,30 +68,66 @@ def get_clob_balance_l1(private_key: str, wallet: str) -> float | None:
 
     try:
         ts = str(int(_time.time()))
-        msg = ts + "GET" + "/balance"
-        signed = Account.sign_message(encode_defunct(text=msg), private_key=private_key)
-        sig = "0x" + signed.signature.hex() if not signed.signature.hex().startswith("0x") else signed.signature.hex()
+        # L1 auth: sign just the timestamp string (not ts+method+path)
+        signed = Account.sign_message(encode_defunct(text=ts), private_key=private_key)
+        sig = signed.signature.hex()
+        if not sig.startswith("0x"):
+            sig = "0x" + sig
         headers = {
             "POLY_ADDRESS":   wallet,
             "POLY_SIGNATURE": sig,
             "POLY_TIMESTAMP": ts,
-            "POLY_NONCE":     "",
+            "POLY_NONCE":     "0",
         }
-        r = req_lib.get(f"{CLOB_BASE}/balance", headers=headers, timeout=10)
-        print(f"[Balance] CLOB /balance HTTP {r.status_code}: {r.text[:120]}", flush=True)
-        if r.ok:
-            data = r.json()
-            for key in ("balance", "usdc", "amount", "collateral"):
-                if key in data:
-                    return float(data[key])
+        for path in ("/balance", "/data/balance", "/credit-balance", "/cash-balance"):
+            r = req_lib.get(f"{CLOB_BASE}{path}", headers=headers, timeout=10)
+            print(f"[Balance] CLOB {path} HTTP {r.status_code}: {r.text[:120]}", flush=True)
+            if r.ok:
+                data = r.json()
+                for key in ("balance", "usdc", "amount", "collateral", "USDC", "deposited"):
+                    if key in data:
+                        return float(data[key])
     except Exception as e:
         print(f"[Balance] L1 auth call failed: {e}", flush=True)
     return None
 
 
-def report_balance(private_key: str, wallet: str, report_url: str, signal_secret: str) -> None:
-    """Fetch CLOB deposited balance via L1 auth and POST to server."""
-    balance = get_clob_balance_l1(private_key, wallet)
+def get_clob_balance_sdk(client) -> float | None:
+    """Try all non-dunder SecureClient methods that might return a balance."""
+    attrs = [a for a in dir(client) if not a.startswith("_") and "balance" in a.lower()]
+    print(f"[Balance] SecureClient balance attrs: {attrs}", flush=True)
+    print(f"[Balance] SecureClient all public attrs: {[a for a in dir(client) if not a.startswith('_')]}", flush=True)
+    for method_name in attrs:
+        method = getattr(client, method_name, None)
+        if callable(method):
+            try:
+                result = method()
+                print(f"[Balance] SDK {method_name}() → {result}", flush=True)
+                if isinstance(result, (int, float)):
+                    return float(result)
+                if isinstance(result, dict):
+                    for key in ("balance", "usdc", "amount", "collateral", "USDC", "deposited"):
+                        if key in result:
+                            return float(result[key])
+                if hasattr(result, "balance"):
+                    return float(result.balance)
+            except Exception as e:
+                print(f"[Balance] SDK {method_name}() failed: {e}", flush=True)
+    return None
+
+
+def report_balance(private_key: str, wallet: str, report_url: str, signal_secret: str, client=None) -> None:
+    """Fetch CLOB deposited balance (try SDK attrs first, then direct L1 auth) and POST to server."""
+    balance: float | None = None
+
+    # 1. Try SDK introspection (prints dir so we can find the right method name)
+    if client is not None:
+        balance = get_clob_balance_sdk(client)
+
+    # 2. Fall back to direct L1 ECDSA auth
+    if balance is None:
+        balance = get_clob_balance_l1(private_key, wallet)
+
     if balance is None:
         print("[Balance] Could not fetch CLOB balance — skipping report", flush=True)
         return
@@ -193,7 +229,7 @@ def main():
             )
             print(f"[OK] Order placed! attempt={attempt} id={response.order_id} status={response.status}")
             if report_url:
-                report_balance(private_key, wallet, report_url, signal_secret)
+                report_balance(private_key, wallet, report_url, signal_secret, client=client)
             sys.exit(0)
         except RequestRejectedError as e:
             msg = str(e).lower()
