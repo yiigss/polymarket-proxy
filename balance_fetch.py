@@ -28,7 +28,7 @@ def main() -> None:
     wallet = acct.address
     ts_l1  = str(int(time.time()))
     signed = acct.sign_message(encode_defunct(text=ts_l1))
-    sig_l1 = "0x" + signed.signature.hex().lstrip("0x")
+    sig_l1 = "0x" + signed.signature.hex()  # hex() has no 0x prefix; never lstrip
     print(f"[Balance] L1 auth for wallet={wallet[:10]}...", flush=True)
 
     # ── Derive fresh L2 API key ─────────────────────────────────────────────
