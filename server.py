@@ -48,25 +48,35 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def _handle_balance(self):
-        """Fetch CLOB cash balance using stored API key credentials.
+        """Fetch CLOB cash balance via NordVPN Switzerland SOCKS5 (same path as bet.py).
         Credentials can be passed via X-Poly-Key/Secret/Pass headers (fallback from env)."""
-        api_key    = self.headers.get("X-Poly-Key")    or os.environ.get("POLYMARKET_API_KEY", "")
-        secret_b64 = self.headers.get("X-Poly-Secret") or os.environ.get("POLYMARKET_SECRET", "")
-        passphrase = self.headers.get("X-Poly-Pass")   or os.environ.get("POLYMARKET_PASSPHRASE", "")
+        import requests as req_lib
+        api_key      = self.headers.get("X-Poly-Key")    or os.environ.get("POLYMARKET_API_KEY", "")
+        secret_b64   = self.headers.get("X-Poly-Secret") or os.environ.get("POLYMARKET_SECRET", "")
+        passphrase   = self.headers.get("X-Poly-Pass")   or os.environ.get("POLYMARKET_PASSPHRASE", "")
+        nordvpn_user = os.environ.get("NORDVPN_SERVICE_USERNAME", "")
+        nordvpn_pass = os.environ.get("NORDVPN_SERVICE_PASSWORD", "")
         if not api_key or not secret_b64 or not passphrase:
             self._send_json(503, {"error": "CLOB credentials not configured"})
             return
         try:
-            import urllib.request as _urllib
+            server_ip = random.choice(CH_SOCKS5_SERVERS)
+            print(f"[Balance] Routing via NordVPN CH: {server_ip}", flush=True)
+
+            # Build HMAC L2 signature
             ts  = str(int(time.time()))
             msg = ts + "GET" + "/balance-allowance?asset_type=COLLATERAL"
-            # Secret uses URL-safe base64 (- and _ chars). Strip and re-pad before decoding.
             secret_stripped = secret_b64.rstrip("=")
             secret_padded   = secret_stripped + "=" * (-len(secret_stripped) % 4)
             sig = base64.b64encode(
                 hmac.new(base64.urlsafe_b64decode(secret_padded), msg.encode(), hashlib.sha256).digest()  # type: ignore[attr-defined]
             ).decode()
-            req = _urllib.Request(
+
+            proxies = {
+                "https": f"socks5h://{nordvpn_user}:{nordvpn_pass}@{server_ip}:1080",
+                "http":  f"socks5h://{nordvpn_user}:{nordvpn_pass}@{server_ip}:1080",
+            }
+            r = req_lib.get(
                 "https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL",
                 headers={
                     "POLY-API-KEY":    api_key,
@@ -74,13 +84,19 @@ class Handler(BaseHTTPRequestHandler):
                     "POLY-TIMESTAMP":  ts,
                     "POLY-PASSPHRASE": passphrase,
                 },
+                proxies=proxies,
+                timeout=20,
             )
-            with _urllib.urlopen(req, timeout=10) as r:
-                body = json.loads(r.read().decode())
-            raw = body.get("balance", "0")
+            body = r.json()
+            if not r.ok:
+                self._send_json(200, {"error": f"CLOB {r.status_code}: {body}", "balance": None})
+                return
+            raw     = body.get("balance", "0")
             balance = float(raw) / 1_000_000
-            self._send_json(200, {"balance": balance, "raw": body})
+            print(f"[Balance] CLOB cash: ${balance:.2f}", flush=True)
+            self._send_json(200, {"balance": balance})
         except Exception as e:
+            print(f"[Balance] Error: {e}", flush=True)
             self._send_json(200, {"error": str(e), "balance": None})
 
     def do_POST(self):
