@@ -14,6 +14,10 @@ on:
         description: 'Candle open time ms'
         required: true
         type: string
+      report_url:
+        description: 'URL to POST balance after bet (e.g. https://<domain>/api/btc/balance-report)'
+        required: false
+        type: string
 jobs:
   place-bet:
     runs-on: ubuntu-latest
@@ -47,6 +51,8 @@ jobs:
         env:
           POLYMARKET_PRIVATE_KEY:    ${{ secrets.POLYMARKET_PRIVATE_KEY }}
           POLYMARKET_WALLET_ADDRESS: ${{ secrets.POLYMARKET_WALLET_ADDRESS }}
+          SIGNAL_SECRET:             ${{ secrets.SIGNAL_SECRET }}
+          REPORT_URL:                ${{ inputs.report_url }}
         run: |
           python3 bet/bet.py \
             "${{ inputs.side }}" \
