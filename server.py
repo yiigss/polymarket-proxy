@@ -48,10 +48,11 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def _handle_balance(self):
-        """Fetch CLOB cash balance using stored API key credentials."""
-        api_key    = os.environ.get("POLYMARKET_API_KEY", "")
-        secret_b64 = os.environ.get("POLYMARKET_SECRET", "")
-        passphrase = os.environ.get("POLYMARKET_PASSPHRASE", "")
+        """Fetch CLOB cash balance using stored API key credentials.
+        Credentials can be passed via X-Poly-Key/Secret/Pass headers (fallback from env)."""
+        api_key    = self.headers.get("X-Poly-Key")    or os.environ.get("POLYMARKET_API_KEY", "")
+        secret_b64 = self.headers.get("X-Poly-Secret") or os.environ.get("POLYMARKET_SECRET", "")
+        passphrase = self.headers.get("X-Poly-Pass")   or os.environ.get("POLYMARKET_PASSPHRASE", "")
         if not api_key or not secret_b64 or not passphrase:
             self._send_json(503, {"error": "CLOB credentials not configured"})
             return
