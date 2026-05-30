@@ -95,19 +95,27 @@ def get_clob_balance_l1(private_key: str, wallet: str) -> float | None:
 def get_clob_balance_sdk(client) -> float | None:
     """Fetch CLOB USDC balance via SecureClient SDK methods."""
     # 1. get_balance_allowance(asset_type='COLLATERAL') — USDC deposited balance
+    #    Returns raw on-chain units (6 decimals for USDC on Polygon) — divide by 1e6.
     for asset_type in ("COLLATERAL", "CONDITIONAL"):
         try:
             result = client.get_balance_allowance(asset_type=asset_type)
             print(f"[Balance] get_balance_allowance({asset_type!r}) → {result}", flush=True)
+            raw: float | None = None
             if isinstance(result, (int, float)):
-                return float(result)
-            if isinstance(result, dict):
+                raw = float(result)
+            elif isinstance(result, dict):
                 for key in ("balance", "usdc", "amount", "collateral", "USDC", "deposited", "allowance"):
                     if key in result:
-                        return float(result[key])
-            for attr in ("balance", "allowance", "amount", "value"):
-                if hasattr(result, attr):
-                    return float(getattr(result, attr))
+                        raw = float(result[key])
+                        break
+            else:
+                for attr in ("balance", "allowance", "amount", "value"):
+                    if hasattr(result, attr):
+                        raw = float(getattr(result, attr))
+                        break
+            if raw is not None:
+                # Values > 1000 are raw on-chain (6-decimal micro-USDC), convert to dollars
+                return raw / 1e6 if raw > 1000 else raw
         except Exception as e:
             print(f"[Balance] get_balance_allowance({asset_type!r}) failed: {e}", flush=True)
 
