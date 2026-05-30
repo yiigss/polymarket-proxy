@@ -2,18 +2,21 @@
 """
 balance_fetch.py — fetch CLOB cash balance via fresh L2 key derivation and report back.
 
-Runs inside a GHA runner that already has NordVPN CH connected at OS level,
-so all outbound traffic is already Swiss — no SOCKS5 needed.
+Runs inside a GHA runner with NordVPN CH connected at OS level.
+Uses the polymarket-client SDK's own EIP-712 L1 auth (same as bet.py).
 
-Usage (env vars required):
+Env vars:
   POLYMARKET_PRIVATE_KEY — hex private key (with or without 0x)
   REPORT_URL             — https://<domain>/api/btc/balance-report
   SIGNAL_SECRET          — shared secret for X-Signal-Secret header
 """
-import os, sys, json, time, hmac, hashlib, base64
+import os, sys, time, hmac, hashlib, base64
 import requests
 from eth_account import Account
-from eth_account.messages import encode_defunct
+from polymarket._internal.l1_auth import sign_api_key_auth
+from polymarket._internal.actions.auth import build_l1_auth_headers
+
+CHAIN_ID = 137  # Polygon mainnet
 
 def main() -> None:
     private_key   = os.environ["POLYMARKET_PRIVATE_KEY"]
@@ -23,37 +26,41 @@ def main() -> None:
     if not private_key.startswith("0x"):
         private_key = "0x" + private_key
 
-    # ── L1 auth: sign timestamp with private key ────────────────────────────
-    acct   = Account.from_key(private_key)
+    acct = Account.from_key(private_key)
     wallet = acct.address
-    ts_l1  = str(int(time.time()))
-    signed = acct.sign_message(encode_defunct(text=ts_l1))
-    sig_l1 = "0x" + signed.signature.hex()  # hex() has no 0x prefix; never lstrip
-    print(f"[Balance] L1 auth for wallet={wallet[:10]}...", flush=True)
+    print(f"[Balance] Wallet: {wallet[:10]}...", flush=True)
 
-    # ── Derive fresh L2 API key ─────────────────────────────────────────────
+    # ── Step 1: EIP-712 L1 auth signature ──────────────────────────────────
+    ts = int(time.time())
+    sig = sign_api_key_auth(acct, chain_id=CHAIN_ID, timestamp=ts, nonce=0)
+    headers_l1 = build_l1_auth_headers(sig)
+    print(f"[Balance] L1 signed (EIP-712) ts={ts}", flush=True)
+
+    # ── Step 2: Derive fresh L2 API key ────────────────────────────────────
     r_key = requests.post(
         "https://clob.polymarket.com/auth/api-key",
-        headers={
-            "POLY_ADDRESS":   wallet,
-            "POLY_SIGNATURE": sig_l1,
-            "POLY_TIMESTAMP": ts_l1,
-            "POLY_NONCE":     "0",
-            "Content-Type":   "application/json",
-        },
+        headers=headers_l1,
         json={},
         timeout=20,
     )
     if not r_key.ok:
-        print(f"[Balance] L2 key derivation failed {r_key.status_code}: {r_key.text}", flush=True)
-        sys.exit(1)
+        # Try derive-api-key if key already exists (400 = already created)
+        if r_key.status_code == 400:
+            r_key = requests.get(
+                "https://clob.polymarket.com/auth/derive-api-key",
+                headers=headers_l1,
+                timeout=20,
+            )
+        if not r_key.ok:
+            print(f"[Balance] L2 key failed {r_key.status_code}: {r_key.text}", flush=True)
+            sys.exit(1)
     key_data   = r_key.json()
     api_key    = key_data["apiKey"]
     secret_b64 = key_data["secret"]
     passphrase = key_data["passphrase"]
     print(f"[Balance] Fresh L2 key: {api_key[:8]}...", flush=True)
 
-    # ── L2 HMAC signature ───────────────────────────────────────────────────
+    # ── Step 3: L2 HMAC signature ───────────────────────────────────────────
     ts_l2  = str(int(time.time()))
     msg_l2 = ts_l2 + "GET" + "/balance-allowance?asset_type=COLLATERAL"
     secret_stripped = secret_b64.rstrip("=")
@@ -62,7 +69,7 @@ def main() -> None:
         hmac.new(base64.urlsafe_b64decode(secret_padded), msg_l2.encode(), hashlib.sha256).digest()
     ).decode()
 
-    # ── Fetch balance ───────────────────────────────────────────────────────
+    # ── Step 4: Fetch CLOB balance ─────────────────────────────────────────
     r_bal = requests.get(
         "https://clob.polymarket.com/balance-allowance?asset_type=COLLATERAL",
         headers={
@@ -82,7 +89,7 @@ def main() -> None:
     balance = float(raw) / 1_000_000
     print(f"[Balance] CLOB cash: ${balance:.2f}", flush=True)
 
-    # ── Report back to API server ───────────────────────────────────────────
+    # ── Step 5: Report to API server ───────────────────────────────────────
     r_rep = requests.post(
         report_url,
         json={"balance": balance, "source": "clob_gha"},
