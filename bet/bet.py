@@ -97,26 +97,18 @@ def get_clob_balance(client) -> float | None:
 
 
 def report_balance(wallet: str, report_url: str, signal_secret: str, client=None) -> None:
-    """Fetch CLOB deposited balance (primary) or on-chain USDC (fallback) and POST to server."""
-    balance = None
-    source  = "gha_onchain"
-
-    # Primary: CLOB deposited balance via authenticated client (shows real account funds)
-    if client is not None:
-        balance = get_clob_balance(client)
-        if balance is not None:
-            source = "gha_clob"
-            print(f"[Balance] CLOB deposited: ${balance:.4f}", flush=True)
-
-    # Fallback: raw wallet USDC on Polygon (shows only undeposited funds)
-    if balance is None:
-        balance = get_onchain_usdc(wallet)
-        if balance is not None:
-            print(f"[Balance] On-chain USDC (fallback): ${balance:.4f}", flush=True)
-
-    if balance is None:
-        print("[Balance] Could not fetch balance — skipping report", flush=True)
+    """Fetch CLOB deposited balance via authenticated client and POST to server."""
+    if client is None:
+        print("[Balance] No client — skipping report", flush=True)
         return
+
+    balance = get_clob_balance(client)
+    if balance is None:
+        print("[Balance] Could not fetch CLOB balance — skipping report", flush=True)
+        return
+
+    source = "gha_clob"
+    print(f"[Balance] CLOB deposited: ${balance:.4f}", flush=True)
 
     try:
         r = req_lib.post(
