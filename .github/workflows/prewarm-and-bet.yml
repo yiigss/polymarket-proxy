@@ -40,41 +40,20 @@ jobs:
           POLYMARKET_PRIVATE_KEY:    ${{ secrets.POLYMARKET_PRIVATE_KEY }}
           POLYMARKET_WALLET_ADDRESS: ${{ secrets.POLYMARKET_WALLET_ADDRESS }}
           SIGNAL_SECRET:             ${{ secrets.SIGNAL_SECRET }}
+          GH_TOKEN:                  ${{ secrets.GITHUB_TOKEN }}
         run: |
           SIGNAL_URL="${{ inputs.signal_url }}"
           export REPORT_URL=$(echo "$SIGNAL_URL" | sed 's|/bet-signal|/balance-report|')
-          echo "Runner warm — VPN connected, Python ready. Polling: $SIGNAL_URL (balance → $REPORT_URL)"
+          ACK_URL=$(echo "$SIGNAL_URL" | sed 's|/bet-signal.*|/bet-signal|')
+          echo "Runner warm — VPN connected, Python ready."
+          echo "Polling GitHub variable BET_SIGNAL (ack → $ACK_URL)"
+
+          # Record initial value so we only fire on NEW signals
+          LAST_SEEN=$(gh api /repos/yiigss/polymarket-proxy/actions/variables/BET_SIGNAL --jq '.value' 2>/dev/null || echo "none")
+          echo "[Signal] Initial value: $LAST_SEEN"
           LAST_BET_CANDLE=""
           polls=0
-          # 60 min at ~2s per poll = 1800 iterations
-          while [ $polls -lt 1800 ]; do
+
+          while [ $polls -lt 3600 ]; do
             polls=$((polls + 1))
-            RESP=$(curl -s --max-time 5 \
-              -H "X-Signal-Secret: $SIGNAL_SECRET" \
-              "$SIGNAL_URL" 2>/dev/null || echo '{"status":"waiting"}')
-            STATUS=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','waiting'))" 2>/dev/null || echo "waiting")
-            echo "Poll $polls: status=$STATUS"
-            if [ "$STATUS" = "fire" ]; then
-              SIDE=$(echo "$RESP"      | python3 -c "import sys,json; print(json.load(sys.stdin)['side'])")
-              AMOUNT=$(echo "$RESP"    | python3 -c "import sys,json; print(json.load(sys.stdin)['amount'])")
-              CANDLE_MS=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['candle_ms'])")
-              if [ "$CANDLE_MS" = "$LAST_BET_CANDLE" ]; then
-                echo "Already placed bet for candle $CANDLE_MS — waiting for next signal..."
-                sleep 2
-                continue
-              fi
-              echo "Firing bet: $SIDE \$$AMOUNT candle=$CANDLE_MS"
-              python3 bet/bet.py "$SIDE" "$AMOUNT" "$CANDLE_MS"
-              LAST_BET_CANDLE="$CANDLE_MS"
-              echo "Bet placed — staying warm for martingale continuation..."
-            elif [ "$STATUS" = "done" ]; then
-              echo "Sequence complete (win or reset) — exiting"
-              exit 0
-            elif [ "$STATUS" = "abort" ]; then
-              echo "Signal aborted — exiting cleanly"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Timeout: runner active for 60 min without completion"
-          exit 1
+            CURRENT=$(gh api /repos/yi
