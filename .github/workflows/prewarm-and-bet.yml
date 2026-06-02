@@ -29,23 +29,42 @@ jobs:
         run: |
           printf '%s\n%s\n' "${{ secrets.NORDVPN_USER }}" "${{ secrets.NORDVPN_PASS }}" > /tmp/vpncreds.txt
           chmod 600 /tmp/vpncreds.txt
-          sudo openvpn --config vpn/ch.ovpn --auth-user-pass /tmp/vpncreds.txt --daemon --log /tmp/vpn.log
-          for i in $(seq 1 40); do
-            sleep 1
-            COUNTRY=$(curl -s --max-time 2 ipinfo.io/country 2>/dev/null || echo '??')
-            echo "Attempt $i: country=$COUNTRY"
-            if [ "$COUNTRY" = "CH" ]; then echo "VPN OK — Switzerland"; break; fi
-            if [ "$i" = "40" ]; then echo "ERROR: VPN timeout"; tail -20 /tmp/vpn.log; exit 1; fi
+          connected=false
+          for attempt in 1 2 3; do
+            CONFIG="/tmp/vpn-server-${attempt}.ovpn"
+            [ -f "$CONFIG" ] || { echo "No config for attempt $attempt — skipping"; continue; }
+            echo "=== VPN attempt $attempt/3 ==="
+            grep 'verify-x509-name' "$CONFIG" || true
+            sudo pkill openvpn 2>/dev/null || true
+            sleep 2
+            sudo openvpn --config "$CONFIG" --auth-user-pass /tmp/vpncreds.txt --daemon --log /tmp/vpn.log
+            for i in $(seq 1 25); do
+              sleep 1
+              COUNTRY=$(curl -s --max-time 2 ipinfo.io/country 2>/dev/null || echo '??')
+              echo "  check $i: $COUNTRY"
+              if [ "$COUNTRY" = "CH" ]; then echo "VPN OK — Switzerland (server $attempt)"; connected=true; break; fi
+            done
+            [ "$connected" = "true" ] && break
+            echo "Server $attempt failed — trying next"
+            tail -5 /tmp/vpn.log
           done
+          if [ "$connected" != "true" ]; then
+            echo "ERROR: VPN failed on all 3 servers"
+            tail -20 /tmp/vpn.log
+            exit 1
+          fi
+
       - name: Cache installed Python packages
         id: pylocal-cache
         uses: actions/cache@v4
         with:
           path: ~/.local
           key: pylocal-polymarket-v1-${{ runner.os }}
+
       - name: Install Python dependencies
         if: steps.pylocal-cache.outputs.cache-hit != 'true'
         run: pip3 install --quiet --pre 'polymarket-client>=0.1.0b3' requests PySocks
+
       - name: Wait for signal and place bet(s)
         env:
           SIGNAL_VAR:                ${{ inputs.signal_var }}
