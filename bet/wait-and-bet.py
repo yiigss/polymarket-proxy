@@ -19,7 +19,7 @@ Market cache is refreshed every 4 minutes during idle wait. Each refresh fetches
 current 5m candle AND the next 5m candle, so the cache always contains the live market.
 Logs "PREWARM READY — market cached, SDK warm" after each successful refresh.
 """
-import os, sys, json, time, traceback, threading
+import os, sys, json, time, traceback
 from decimal import Decimal
 import requests as req_lib
 
@@ -386,12 +386,12 @@ def main():
             fire_ts = time.time()
             print(f"[Signal] Received fire — side={side_str} amount=${amount} candle={signal_candle_ms}", flush=True)
 
-            # Acknowledge in background — frees the critical path immediately
-            threading.Thread(
-                target=set_signal_value,
-                args=(f"ack:{side_str}:{amount}:{signal_candle_ms}",),
-                daemon=True,
-            ).start()
+            # Acknowledge synchronously BEFORE placing the order.
+            # First runner to write ack wins; any other runner that polls after
+            # this write sees "ack:..." (not "fire:...") and falls through to the
+            # idle branch, preventing duplicate bets. Bet proceeds regardless of
+            # whether this write succeeds — a failed ack must not block the order.
+            set_signal_value(f"ack:{side_str}:{amount}:{signal_candle_ms}")
 
             # Resolve market from cache — NO network call post-fire
             try:
