@@ -261,11 +261,27 @@ def main():
                 amount=Decimal(str(round(remaining, 2))),
                 order_type="FAK",
             )
-            # Treat any non-exception response as a full fill of this slice
-            placed    += remaining
-            remaining  = 0.0
-            print(f"[OK] FAK attempt={attempt} id={resp.order_id} status={resp.status} total_placed=${placed:.2f}")
-            break
+            # Determine how much was actually filled this attempt
+            filled_tokens: float | None = None
+            for attr in ("size_matched", "matched_size", "filled_size", "filled"):
+                if hasattr(resp, attr):
+                    try:
+                        filled_tokens = float(getattr(resp, attr))
+                        break
+                    except Exception:
+                        pass
+            if filled_tokens is not None:
+                filled_usdc = filled_tokens * price
+            else:
+                # Field not exposed — assume full fill for this slice
+                filled_usdc = remaining
+            placed    += filled_usdc
+            remaining  = round(amount - placed, 2)
+            print(f"[OK] FAK attempt={attempt} id={resp.order_id} status={resp.status} filled=${filled_usdc:.2f} total=${placed:.2f} remaining=${remaining:.2f}")
+            if remaining < MIN_FAK_USDC:
+                break
+            # Partial fill — loop continues immediately for the remainder
+            _time.sleep(1)
 
         except RequestRejectedError as e:
             if NO_MATCH_MSG in str(e).lower():
