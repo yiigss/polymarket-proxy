@@ -27,35 +27,4 @@ jobs:
 
       - name: Connect to NordVPN Switzerland
         run: |
-          printf '%s\n%s\n' "${{ secrets.NORDVPN_USER }}" "${{ secrets.NORDVPN_PASS }}" > /tmp/vpncreds.txt
-          chmod 600 /tmp/vpncreds.txt
-          sudo openvpn --config vpn/ch.ovpn --auth-user-pass /tmp/vpncreds.txt --daemon --log /tmp/vpn.log
-          for i in $(seq 1 40); do
-            sleep 1
-            COUNTRY=$(curl -s --max-time 2 ipinfo.io/country 2>/dev/null || echo '??')
-            echo "Attempt $i: country=$COUNTRY"
-            if [ "$COUNTRY" = "CH" ]; then echo "VPN OK — Switzerland"; break; fi
-            if [ "$i" = "40" ]; then echo "ERROR: VPN timeout"; tail -20 /tmp/vpn.log; exit 1; fi
-          done
-
-      - name: Cache installed Python packages
-        id: pylocal-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.local
-          key: pylocal-polymarket-v1-${{ runner.os }}
-
-      - name: Install Python dependencies
-        if: steps.pylocal-cache.outputs.cache-hit != 'true'
-        run: pip3 install --quiet --pre 'polymarket-client>=0.1.0b3' requests PySocks
-
-      - name: Wait for signal and place bet(s)
-        env:
-          SIGNAL_VAR:                ${{ inputs.signal_var }}
-          GH_TOKEN:                  ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO:                   "yiigss/polymarket-proxy"
-          POLYMARKET_PRIVATE_KEY:    ${{ secrets.POLYMARKET_PRIVATE_KEY }}
-          POLYMARKET_WALLET_ADDRESS: ${{ secrets.POLYMARKET_WALLET_ADDRESS }}
-          SIGNAL_SECRET:             ${{ secrets.SIGNAL_SECRET }}
-          REPORT_URL:                ${{ inputs.signal_url != '' && replace(inputs.signal_url, '/bet-signal', '/balance-report') || '' }}
-        run: python3 bet/wait-and-bet.py
+          printf '%s\n%s\n' "${{ secrets.NORDVPN_USER }}" "${{ secrets.NORDVPN_PASS }}" > /tmp/vpnc
