@@ -240,12 +240,12 @@ def main():
     import time as _time
 
     MIN_FAK_USDC  = 0.50  # don't retry for less than this amount remaining
-    MAX_ATTEMPTS  = 240   # 1s per attempt = 4 minutes max
+    MAX_ATTEMPTS  = 240   # 0.2s per attempt = 48s max
     NO_MATCH_MSG  = "no orders found to match"
 
-    # ── Pure FAK market order with 1s retry until full amount filled ──────────
+    # ── Pure FAK market order with 0.2s retry until full amount filled ───────
     # FAK = Fill and Kill: fills whatever is available instantly, kills the rest.
-    # We retry every 1s to accumulate fills across multiple attempts.
+    # We retry every 0.2s to accumulate fills across multiple attempts.
     remaining = amount
     placed    = 0.0
     attempt   = 0
@@ -280,13 +280,13 @@ def main():
             print(f"[OK] FAK attempt={attempt} id={resp.order_id} status={resp.status} filled=${filled_usdc:.2f} total=${placed:.2f} remaining=${remaining:.2f}")
             if remaining < MIN_FAK_USDC:
                 break
-            # Partial fill — loop continues immediately for the remainder
-            _time.sleep(1)
+            # Partial fill — loop continues after short sleep
+            _time.sleep(0.2)
 
         except RequestRejectedError as e:
             if NO_MATCH_MSG in str(e).lower():
-                print(f"[Retry {attempt}/{MAX_ATTEMPTS}] No liquidity — waiting 1s...")
-                _time.sleep(1)
+                print(f"[Retry {attempt}/{MAX_ATTEMPTS}] No liquidity — waiting 0.2s...")
+                _time.sleep(0.2)
                 continue
             print(f"[Error] FAK rejected (attempt {attempt}): {e}")
             traceback.print_exc()
