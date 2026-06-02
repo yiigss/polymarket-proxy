@@ -3,11 +3,11 @@ on:
   workflow_dispatch:
     inputs:
       signal_url:
-        description: "URL to poll for bet signal (e.g. https://<domain>/api/btc/bet-signal)"
+        description: "Legacy field — kept for backward compat, no longer used"
         required: true
         type: string
       signal_var:
-        description: "GitHub variable name to poll for the bet signal"
+        description: "GitHub repo variable to poll for signal (e.g. BET_SIGNAL)"
         required: false
         default: "BET_SIGNAL"
         type: string
@@ -47,56 +47,38 @@ jobs:
           SIGNAL_SECRET:             ${{ secrets.SIGNAL_SECRET }}
           GH_TOKEN:                  ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SIGNAL_URL="${{ inputs.signal_url }}"
-          SIGNAL_VAR="${{ inputs.signal_var }}"
-          export REPORT_URL=$(echo "$SIGNAL_URL" | sed 's|/bet-signal|/balance-report|')
-          ACK_URL=$(echo "$SIGNAL_URL" | sed 's|/bet-signal.*|/bet-signal|')
-          echo "Runner warm -- VPN connected, Python ready."
-          echo "Polling GitHub variable $SIGNAL_VAR (ack -> $ACK_URL)"
-
-          # Record initial value so we only fire on NEW signals
-          LAST_SEEN=$(gh api /repos/yiigss/polymarket-proxy/actions/variables/$SIGNAL_VAR --jq '.value' 2>/dev/null || echo "none")
-          echo "[Signal] Initial value: $LAST_SEEN"
+          VAR_NAME="${{ inputs.signal_var }}"
+          GH_REPO="yiigss/polymarket-proxy"
+          echo "Runner warm — polling GitHub variable: $VAR_NAME"
           LAST_BET_CANDLE=""
           polls=0
-
-          while [ $polls -lt 3600 ]; do
+          while [ $polls -lt 1800 ]; do
             polls=$((polls + 1))
-            CURRENT=$(gh api /repos/yiigss/polymarket-proxy/actions/variables/$SIGNAL_VAR --jq '.value' 2>/dev/null || echo "error")
-
-            if [ "$CURRENT" = "error" ]; then
-              sleep 1; continue
-            fi
-
-            if [ "$CURRENT" != "$LAST_SEEN" ]; then
-              LAST_SEEN="$CURRENT"
-              echo "[Signal] Changed -> $CURRENT"
-
-              if echo "$CURRENT" | grep -q "^fire:"; then
-                SIDE=$(echo "$CURRENT"      | cut -d: -f2)
-                AMOUNT=$(echo "$CURRENT"    | cut -d: -f3)
-                CANDLE_MS=$(echo "$CURRENT" | cut -d: -f4)
-
-                if [ "$CANDLE_MS" = "$LAST_BET_CANDLE" ]; then
-                  echo "[Signal] Duplicate candle $CANDLE_MS -- skipping"
-                else
-                  LAST_BET_CANDLE="$CANDLE_MS"
-                  echo "[Signal] Placing bet: side=$SIDE amount=$AMOUNT candle=$CANDLE_MS"
-                  python3 bet/bet.py "$SIDE" "$AMOUNT" "$CANDLE_MS"
-                  echo "[Signal] bet.py exited with $?"
-                  curl -s -X POST "$ACK_URL" \
-                    -H "Content-Type: application/json" \
-                    -H "x-signal-secret: ${SIGNAL_SECRET}" \
-                    -d '{"status":"done"}' || true
-                fi
-
-              elif [ "$CURRENT" = "abort" ] || [ "$CURRENT" = "idle" ] || [ "$CURRENT" = "done" ]; then
-                echo "[Signal] Received '$CURRENT' -- exiting"
-                exit 0
+            VALUE=$(curl -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GH_REPO}/actions/variables/${VAR_NAME}" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('value','idle'))" 2>/dev/null || echo "idle")
+            echo "Poll $polls: $VAR_NAME=$VALUE"
+            if [[ "$VALUE" == fire:* ]]; then
+              IFS=':' read -r _ SIDE AMOUNT CANDLE_MS NONCE <<< "$VALUE"
+              if [ "$CANDLE_MS" = "$LAST_BET_CANDLE" ]; then
+                echo "Already placed bet for candle $CANDLE_MS — waiting for next signal..."
+                sleep 2
+                continue
               fi
+              echo "Firing bet: $SIDE \$$AMOUNT candle=$CANDLE_MS"
+              python3 bet/bet.py "$SIDE" "$AMOUNT" "$CANDLE_MS"
+              LAST_BET_CANDLE="$CANDLE_MS"
+              echo "Bet placed — staying warm for martingale continuation..."
+            elif [ "$VALUE" = "done" ]; then
+              echo "Sequence complete — exiting"
+              exit 0
+            elif [ "$VALUE" = "abort" ]; then
+              echo "Signal aborted — exiting cleanly"
+              exit 0
             fi
-
-            sleep 1
+            sleep 2
           done
-
-          echo "[Signal] Timeout after 3600s -- exiting"
+          echo "Timeout: runner active for 60 min without completion"
+          exit 1
