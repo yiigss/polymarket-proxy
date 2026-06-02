@@ -78,7 +78,7 @@ jobs:
               echo "Signal aborted — exiting cleanly"
               exit 0
             fi
-            sleep 2
+            sleep 1
           done
           echo "Timeout: runner active for 60 min without completion"
           exit 1
