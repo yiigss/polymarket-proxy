@@ -12,6 +12,10 @@ on:
         default: "BET_SIGNAL"
         type: string
 
+concurrency:
+  group: prewarm-${{ inputs.signal_var }}
+  cancel-in-progress: true
+
 jobs:
   prewarm-and-bet:
     runs-on: [self-hosted, ch-vpn]
