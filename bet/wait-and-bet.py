@@ -310,19 +310,45 @@ def report_balance(client) -> None:
         return
 
     print(f"[Balance] CLOB deposited: ${balance:.4f}", flush=True)
+
+    # Primary: write to GitHub repo variable (bypasses Replit shield)
     try:
-        r = req_lib.post(
-            REPORT_URL,
-            json={"balance": balance, "source": "gha_clob"},
-            headers={"X-Signal-Secret": SIGNAL_SECRET, "Content-Type": "application/json"},
+        payload = {"name": "BALANCE_USDC", "value": f"{balance:.6f}"}
+        r = req_lib.patch(
+            f"{GH_API}/repos/{GH_REPO}/actions/variables/BALANCE_USDC",
+            json=payload,
+            headers={"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"},
             timeout=8,
         )
-        if r.ok:
-            print(f"[Balance] Reported ${balance:.4f} to server ✓", flush=True)
+        if r.status_code == 404:
+            r = req_lib.post(
+                f"{GH_API}/repos/{GH_REPO}/actions/variables",
+                json=payload,
+                headers={"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"},
+                timeout=8,
+            )
+        if r.ok or r.status_code == 204:
+            print(f"[Balance] Wrote ${balance:.4f} → GH variable BALANCE_USDC ✓", flush=True)
         else:
-            print(f"[Balance] Report failed: {r.status_code} {r.text[:100]}", flush=True)
+            print(f"[Balance] GH variable write failed: {r.status_code} {r.text[:100]}", flush=True)
     except Exception as e:
-        print(f"[Balance] Report POST failed: {e}", flush=True)
+        print(f"[Balance] GH variable write error: {e}", flush=True)
+
+    # Fallback: POST to server if REPORT_URL is set
+    if REPORT_URL:
+        try:
+            r = req_lib.post(
+                REPORT_URL,
+                json={"balance": balance, "source": "gha_clob"},
+                headers={"X-Signal-Secret": SIGNAL_SECRET, "Content-Type": "application/json"},
+                timeout=8,
+            )
+            if r.ok:
+                print(f"[Balance] Reported ${balance:.4f} to server ✓", flush=True)
+            else:
+                print(f"[Balance] Report failed: {r.status_code} {r.text[:100]}", flush=True)
+        except Exception as e:
+            print(f"[Balance] Report POST failed: {e}", flush=True)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
