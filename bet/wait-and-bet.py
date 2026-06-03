@@ -65,8 +65,9 @@ def confirm_swiss_ip() -> str:
     city    = ip_data.get("city", "?")
     country = ip_data.get("country", "?")
     print(f"[IP] {ip} — {city}, {country}", flush=True)
-    if country != "CH":
-        raise RuntimeError(f"Not a Swiss IP — got country={country!r}. VPN not active?")
+    BLOCKED = {"US", "GB"}
+    if country in BLOCKED:
+        raise RuntimeError(f"Blocked country — got country={country!r}. Use a non-US/UK IP.")
     return ip
 
 
